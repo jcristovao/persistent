@@ -73,18 +73,23 @@ parseFieldType t0 =
             PSSuccess x t' -> goMany (front . (x:)) t'
             _ -> PSSuccess (front []) t
 
+type ExtrasValidate =  ([[Text]],M.Map Text [[Text]])
+                    -> ([[Text]],M.Map Text [[Text]])
+
 data PersistSettings = PersistSettings
     { psToDBName :: !(Text -> Text)
     , psStrictFields :: !Bool
     -- ^ Whether fields are by default strict. Default value: @True@.
     --
     -- Since 1.2
+    , validateExtras :: !(Maybe ExtrasValidate)
     }
 
 upperCaseSettings :: PersistSettings
 upperCaseSettings = PersistSettings
     { psToDBName = id
     , psStrictFields = True
+    , validateExtras = Nothing
     }
 
 lowerCaseSettings :: PersistSettings
@@ -95,6 +100,7 @@ lowerCaseSettings = PersistSettings
                 | otherwise = T.singleton c
          in T.dropWhile (== '_') . T.concatMap go
     , psStrictFields = True
+    , validateExtras = Nothing
     }
 
 -- | Parses a quasi-quoted syntax into a list of entity definitions.
@@ -206,7 +212,8 @@ mkEntityDef ps name entattribs lines =
         case T.uncons name of
             Just ('+', x) -> (True, x)
             _ -> (False, name)
-    (attribs, extras) = splitExtras lines
+    (attribs, extras) = (maybe id id (validateExtras ps))
+                      $ splitExtras lines
     idName [] = "id"
     idName (t:ts) =
         case T.stripPrefix "id=" t of

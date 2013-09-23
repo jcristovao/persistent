@@ -90,7 +90,7 @@ library
 
     hs-source-dirs: ., test, persistent, persistent-template, persistent-sqlite, persistent-postgresql, persistent-mysql, persistent-couchdb
 
-    ghc-options:   -Wall
+    ghc-options:   -Wall 
     -- if impl(ghc >= 7.4)
     --   cpp-options: -DGHC_7_4
 
@@ -131,6 +131,8 @@ library
                    , bson
                    , silently
                    , blaze-builder
+                   , hssqlppp
+                   , hssqlppp-th
 
    if flag(nooverlap)
      cpp-options: -DNO_OVERLAP
@@ -184,13 +186,14 @@ test-suite test
     type:          exitcode-stdio-1.0
     main-is:       main.hs
     hs-source-dirs: test
-
+    extra-libraries: sqlite3
     build-depends:   base >= 4 && < 5
                    , persistent-test
                    , hspec
                    , system-filepath
                    , system-fileio
                    , resourcet
+                   , hssqlppp
 
     if flag(mongodb)
         cpp-options: -DWITH_MONGODB -DDEBUG
