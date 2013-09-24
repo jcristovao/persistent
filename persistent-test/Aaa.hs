@@ -4,9 +4,15 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleContexts #-}
-module Aaa (
-    persistW
-) where
+module Aaa
+ (  persistW
+  , getSqlCode
+ ) where
+
+import Database.Persist.Sql hiding (Statement)
+import Database.Persist.Postgresql hiding (Statement)
+import Control.Monad.IO.Class (MonadIO (..))
+import Data.IORef
 
 import Language.Haskell.TH.Quote
 import Database.Persist.TH (mkPersist, mkMigrate, share, sqlSettings, persistLowerCase, persistUpperCase, persistWith)
@@ -16,13 +22,16 @@ import Data.Maybe
 import Data.List
 import qualified Data.Map as Map
 import qualified Data.Text as T
+import qualified Data.Text.Lazy as LT
 import Data.Text (Text)
+import Data.Conduit
 
 import Database.HsSqlPpp.Quote
 import Database.HsSqlPpp.Ast
+import Database.HsSqlPpp.Pretty
 import Data.Char
 
-import Triggers
+import Triggers (triggers)
 
 data PostgreSqlTriggerType = BEFORE | AFTER | INSTEADOF
   deriving (Eq,Show,Read)
@@ -52,26 +61,26 @@ validateExtra (attribs,extras) = let
 persistW :: QuasiQuoter
 persistW = persistWith lowerCaseSettings { validateExtras = Just validateExtra }
 
-getSqlFuncName :: Statement -> Maybe String
-getSqlFuncName sql = case sql of
-   (CreateFunction _ (Name _ ns) _ _ _ _ _ _)
-      -> if null ns then Nothing else Just (ncStr $ last ns)
-   _  -> Nothing
+{-getSqlFuncName :: Statement -> Maybe String-}
+{-getSqlFuncName sql = case sql of-}
+   {-(CreateFunction _ (Name _ ns) _ _ _ _ _ _)-}
+      {--> if null ns then Nothing else Just (ncStr $ last ns)-}
+   {-_  -> Nothing-}
 
-getSqlFuncType :: Statement -> Maybe String
-getSqlFuncType sql = case sql of
-  (CreateFunction _ _ _ (SimpleTypeName _ (Name _ ns)) _ _ _ _)
-    -> if null ns
-          then Nothing
-          else Just (ncStr $ last ns)
-  _ -> Nothing
+{-getSqlFuncType :: Statement -> Maybe String-}
+{-getSqlFuncType sql = case sql of-}
+  {-(CreateFunction _ _ _ (SimpleTypeName _ (Name _ ns)) _ _ _ _)-}
+    {--> if null ns-}
+          {-then Nothing-}
+          {-else Just (ncStr $ last ns)-}
+  {-_ -> Nothing-}
 
-getSqlFuncCode :: Statement -> Maybe (String,String)
+getSqlFuncCode :: Statement -> Maybe (String,Statement)
 getSqlFuncCode sql = case sql of
    (CreateFunction _ (Name _ ns) _ _ _ _ (PlpgsqlFnBody _ cd) _)
       -> if null ns
           then Nothing
-          else Just (ncStr $ last ns, show cd)
+          else Just (ncStr $ last ns, sql)
    _  -> Nothing
 
 
@@ -89,15 +98,18 @@ isSqlTrigger name = any (== Just (map toLower name, map toLower "trigger"))
                   $ fmap (getSqlFuncAttrs) triggers
 
 getSqlCode :: String -> String
-getSqlCode name = maybe "" snd
-                $ find (\(n,_) -> n == name)
+getSqlCode name = maybe "" (LT.unpack . printStatements (PrettyPrintFlags PostgreSQLDialect) . replicate 1 . snd)
+                $ find (\(n,_) -> n == map (toLower) name)
                 $ map (fromJust)
                 $ filter (isJust)
                 $ map (getSqlFuncCode) triggers
 
-
 {-getSqlTriggers :: [String]-}
 {-getSqlTriggers = filter (not . null)-}
                {-$ fmap (maybe "" id . getSqlFuncName) triggers-}
+
+------------------------------------------------------------------------------
+-- PostgreSQL replacements ---------------------------------------------------
+------------------------------------------------------------------------------
 
 

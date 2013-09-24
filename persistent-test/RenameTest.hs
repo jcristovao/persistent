@@ -44,7 +44,7 @@ specs :: Spec
 specs = describe "rename specs" $ do
 #ifndef WITH_MONGODB
     it "handles lower casing" $ asIO $ do
-        runConn $ do
+        runConn' (Just getSqlCode) $ do
             _ <- runMigration lowerCaseMigrate
             C.runResourceT $ rawQuery "SELECT full_name from lower_case_table WHERE my_id=5" [] C.$$ CL.sinkNull
             C.runResourceT $ rawQuery "SELECT something_else from ref_table WHERE id=4" [] C.$$ CL.sinkNull

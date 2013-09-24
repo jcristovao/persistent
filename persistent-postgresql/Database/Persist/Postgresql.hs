@@ -8,12 +8,21 @@
 -- | A postgresql backend for persistent.
 module Database.Persist.Postgresql
     ( withPostgresqlPool
+    , withPostgresqlPool'
     , withPostgresqlConn
+    , withPostgresqlConn'
     , createPostgresqlPool
+    , createPostgresqlPool'
     , module Database.Persist.Sql
     , ConnectionString
+    , GetSqlFunc
     , PostgresConf (..)
     , openSimpleConn
+    , prepare'
+    , execute'
+    , escape
+    , insertSql'
+    , migrate'
     ) where
 
 import Database.Persist.Sql
@@ -57,7 +66,6 @@ import Control.Monad (forM, mzero)
 import System.Environment (getEnvironment)
 import Data.Int (Int64)
 
-
 -- | A @libpq@ connection string.  A simple example of connection
 -- string would be @\"host=localhost port=5432 user=test
 -- dbname=test password=test\"@.  Please read libpq's
@@ -66,6 +74,8 @@ import Data.Int (Int64)
 -- for more details on how to create such strings.
 type ConnectionString = ByteString
 
+
+type GetSqlFunc = Maybe (String -> String)
 
 -- | Create a PostgreSQL connection pool and run the given
 -- action.  The pool is properly released after the action
@@ -118,7 +128,7 @@ openSimpleConn conn = do
         , connStmtMap    = smap
         , connInsertSql  = insertSql'
         , connClose      = PG.close conn
-        , connMigrateSql = migrate'
+        , connMigrateSql = migrate' Nothing
         , connBegin      = const $ PG.begin    conn
         , connCommit     = const $ PG.commit   conn
         , connRollback   = const $ PG.rollback conn
@@ -298,21 +308,23 @@ getGetter other   = error $ "Postgresql.getGetter: type " ++
 unBinary :: PG.Binary a -> a
 unBinary (PG.Binary x) = x
 
-getExtrasSql :: EntityDef sqlType -> [AlterDB]
-getExtrasSql val = let
+getExtrasSql :: GetSqlFunc -> EntityDef sqlType -> [AlterDB]
+getExtrasSql gsql val = let
     trigs   = Map.lookup "Triggers" $ entityExtra val
     entries = replicate 1 . AddFunction
     fns (Just t) = map (\x -> x !! 1) t
-    process = case trigs of
-        Just _ -> entries . getSqlCode . T.unpack $ fns trigs
+    process getSqlCode = case trigs of
+        Just _ -> entries . getSqlCode . T.unpack $ head $ fns trigs
         _      -> []
-    in process
+    in maybe [] process gsql
 
-migrate' :: [EntityDef a]
+
+migrate' :: GetSqlFunc
+         -> [EntityDef a]
          -> (Text -> IO Statement)
          -> EntityDef SqlType
          -> IO (Either [Text] [(Bool, Text)])
-migrate' allDefs getter val = fmap (fmap $ map showAlterDb) $ do
+migrate' gsql allDefs getter val = fmap (fmap $ map showAlterDb) $ do
     let name = entityDB val
     old <- getColumns getter val
     case partitionEithers old of
@@ -336,9 +348,10 @@ migrate' allDefs getter val = fmap (fmap $ map showAlterDb) $ do
                     let uniques = flip concatMap (snd new) $ \(uname, ucols) ->
                             [AlterTable name $ AddUniqueConstraint uname ucols]
                         references = mapMaybe (getAddReference name) $ fst new
-                    if not . null $ getExtrasSql val
+                        getExtras  = getExtrasSql gsql
+                    if not . null . getExtras $ val
                       then return $ Right $ addTable : uniques ++ references
-                                                               ++ (getExtrasSql val)
+                                                               ++ (getExtras val)
                       else return $ Right $ addTable : uniques ++ references
                 else do
                     let (acs, ats) = getAlters val new old'
@@ -749,3 +762,79 @@ refName (DBName table) (DBName column) =
 
 udToPair :: UniqueDef -> (DBName, [DBName])
 udToPair ud = (uniqueDBName ud, map snd $ uniqueFields ud)
+
+-------------------------------------------------------------------------------
+-- Extra Stuff ----------------------------------------------------------------
+-------------------------------------------------------------------------------
+
+-- | Create a PostgreSQL connection pool and run the given
+-- action.  The pool is properly released after the action
+-- finishes using it.  Note that you should not use the given
+-- 'ConnectionPool' outside the action since it may be already
+-- been released.
+withPostgresqlPool' :: MonadIO m
+                   => GetSqlFunc
+                   -- ^ Function to get custom SQL to be executed
+                   -- at migration
+                   -> ConnectionString
+                   -- ^ Connection string to the database.
+                   -> Int
+                   -- ^ Number of connections to be kept open in
+                   -- the pool.
+                   -> (ConnectionPool -> m a)
+                   -- ^ Action to be executed that uses the
+                   -- connection pool.
+                   -> m a
+withPostgresqlPool' gsql ci = withSqlPool $ open'' gsql ci
+
+
+-- | Create a PostgreSQL connection pool.  Note that it's your
+-- responsability to properly close the connection pool when
+-- unneeded.  Use 'withPostgresqlPool' for an automatic resource
+-- control.
+createPostgresqlPool':: MonadIO m
+                     => GetSqlFunc
+                     -- ^ Function to get custom SQL to be executed
+                     -- at migration
+                     -> ConnectionString
+                     -- ^ Connection string to the database.
+                     -> Int
+                     -- ^ Number of connections to be kept open
+                     -- in the pool.
+                     -> m ConnectionPool
+createPostgresqlPool' gsql ci = createSqlPool $ open'' gsql ci
+
+
+-- | Same as 'withPostgresqlPool', but instead of opening a pool
+-- of connections, only one connection is opened.
+withPostgresqlConn' :: (MonadIO m, MonadBaseControl IO m)
+                   => GetSqlFunc
+                   -> ConnectionString
+                   -> (Connection -> m a)
+                   -> m a
+withPostgresqlConn' gsql = withSqlConn . (open'' gsql)
+
+
+open'' :: GetSqlFunc -> ConnectionString -> IO Connection
+open'' gsql cstr = do
+    PG.connectPostgreSQL cstr >>= openSimpleConn' gsql
+
+-- | Generate a 'Connection' from a 'PG.Connection'
+openSimpleConn' :: GetSqlFunc -> PG.Connection -> IO Connection
+openSimpleConn' gsql conn = do
+    smap <- newIORef $ Map.empty
+    return Connection
+        { connPrepare    = prepare' conn
+        , connStmtMap    = smap
+        , connInsertSql  = insertSql'
+        , connClose      = PG.close conn
+        , connMigrateSql = migrate' gsql
+        , connBegin      = const $ PG.begin    conn
+        , connCommit     = const $ PG.commit   conn
+        , connRollback   = const $ PG.rollback conn
+        , connEscapeName = escape
+        , connNoLimit    = "LIMIT ALL"
+        , connRDBMS      = "postgresql"
+        }
+
+
