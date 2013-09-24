@@ -32,10 +32,6 @@ share [mkPersist sqlSettings, mkMigrate "lowerCaseMigrate"] [persistW|
 #endif
 LowerCaseTable id=my_id
     fullName Text
-    ExtraBlock
-        foo bar
-        baz
-        bin
     Triggers
         AFTER tableIdTrig
 RefTable
@@ -56,8 +52,7 @@ specs = describe "rename specs" $ do
     it "extra blocks" $ do
         entityExtra (entityDef (Nothing :: Maybe LowerCaseTable)) @?=
             Map.fromList
-                [ ("ExtraBlock", map T.words ["foo bar", "baz", "bin"])
-                , ("Triggers", map T.words ["AFTER tableIdTrig"])
+                [ ("Triggers", map T.words ["AFTER tableIdTrig"])
                 ]
 
 asIO :: IO a -> IO a

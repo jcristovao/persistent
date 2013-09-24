@@ -13,6 +13,7 @@ import Database.Persist.TH (mkPersist, mkMigrate, share, sqlSettings, persistLow
 import Database.Persist.Quasi
 
 import Data.Maybe
+import Data.List
 import qualified Data.Map as Map
 import qualified Data.Text as T
 import Data.Text (Text)
@@ -20,6 +21,8 @@ import Data.Text (Text)
 import Database.HsSqlPpp.Quote
 import Database.HsSqlPpp.Ast
 import Data.Char
+
+import Triggers
 
 data PostgreSqlTriggerType = BEFORE | AFTER | INSTEADOF
   deriving (Eq,Show,Read)
@@ -49,49 +52,6 @@ validateExtra (attribs,extras) = let
 persistW :: QuasiQuoter
 persistW = persistWith lowerCaseSettings { validateExtras = Just validateExtra }
 
-tableIdTrig :: Statement
-tableIdTrig = [sqlStmt|
-    CREATE OR REPLACE FUNCTION tableIdTrig()
-      RETURNS trigger AS
-    $BODY$
-      BEGIN
-        PERFORM pg_notify(TG_TABLE_NAME,NEW.id::TEXT);
-        RETURN NULL;
-      END;
-    $BODY$
-      LANGUAGE plpgsql VOLATILE;
-    |]
-
-tableTrig :: Statement
-tableTrig = [sqlStmt|
-    CREATE OR REPLACE FUNCTION tableTrig()
-      RETURNS trigger AS
-    $BODY$
-      BEGIN
-        PERFORM pg_notify(TG_TABLE_NAME,TG_TABLE_NAME);
-        RETURN NULL;
-      END;
-    $BODY$
-      LANGUAGE plpgsql VOLATILE;
-    |]
-
-notTrig :: Statement
-notTrig = [sqlStmt|
-    CREATE OR REPLACE FUNCTION notTrig()
-      RETURNS INT AS
-    $BODY$
-      BEGIN
-        PERFORM pg_notify(TG_TABLE_NAME,TG_TABLE_NAME);
-        RETURN NULL;
-      END;
-    $BODY$
-      LANGUAGE plpgsql VOLATILE;
-    |]
-
-
-triggers :: [Statement]
-triggers = [tableTrig, tableIdTrig, notTrig]
-
 getSqlFuncName :: Statement -> Maybe String
 getSqlFuncName sql = case sql of
    (CreateFunction _ (Name _ ns) _ _ _ _ _ _)
@@ -106,6 +66,15 @@ getSqlFuncType sql = case sql of
           else Just (ncStr $ last ns)
   _ -> Nothing
 
+getSqlFuncCode :: Statement -> Maybe (String,String)
+getSqlFuncCode sql = case sql of
+   (CreateFunction _ (Name _ ns) _ _ _ _ (PlpgsqlFnBody _ cd) _)
+      -> if null ns
+          then Nothing
+          else Just (ncStr $ last ns, show cd)
+   _  -> Nothing
+
+
 getSqlFuncAttrs :: Statement -> Maybe (String,String)
 getSqlFuncAttrs sql = case sql of
    (CreateFunction _ (Name _ fns) _ (SimpleTypeName _ (Name _ tns)) _ _ _ _)
@@ -116,11 +85,19 @@ getSqlFuncAttrs sql = case sql of
 
 
 isSqlTrigger :: String -> Bool
-isSqlTrigger name = any (== Just (map toLower  name, map toLower "trigger"))
+isSqlTrigger name = any (== Just (map toLower name, map toLower "trigger"))
                   $ fmap (getSqlFuncAttrs) triggers
 
-getSqlTriggers :: [String]
-getSqlTriggers = filter (not . null)
-               $ fmap (maybe "" id . getSqlFuncName) triggers
+getSqlCode :: String -> String
+getSqlCode name = maybe "" snd
+                $ find (\(n,_) -> n == name)
+                $ map (fromJust)
+                $ filter (isJust)
+                $ map (getSqlFuncCode) triggers
+
+
+{-getSqlTriggers :: [String]-}
+{-getSqlTriggers = filter (not . null)-}
+               {-$ fmap (maybe "" id . getSqlFuncName) triggers-}
 
 

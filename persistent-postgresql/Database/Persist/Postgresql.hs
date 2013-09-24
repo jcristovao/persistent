@@ -298,6 +298,16 @@ getGetter other   = error $ "Postgresql.getGetter: type " ++
 unBinary :: PG.Binary a -> a
 unBinary (PG.Binary x) = x
 
+getExtrasSql :: EntityDef sqlType -> [AlterDB]
+getExtrasSql val = let
+    trigs   = Map.lookup "Triggers" $ entityExtra val
+    entries = replicate 1 . AddFunction
+    fns (Just t) = map (\x -> x !! 1) t
+    process = case trigs of
+        Just _ -> entries . getSqlCode . T.unpack $ fns trigs
+        _      -> []
+    in process
+
 migrate' :: [EntityDef a]
          -> (Text -> IO Statement)
          -> EntityDef SqlType
@@ -326,7 +336,10 @@ migrate' allDefs getter val = fmap (fmap $ map showAlterDb) $ do
                     let uniques = flip concatMap (snd new) $ \(uname, ucols) ->
                             [AlterTable name $ AddUniqueConstraint uname ucols]
                         references = mapMaybe (getAddReference name) $ fst new
-                    return $ Right $ addTable : uniques ++ references
+                    if not . null $ getExtrasSql val
+                      then return $ Right $ addTable : uniques ++ references
+                                                               ++ (getExtrasSql val)
+                      else return $ Right $ addTable : uniques ++ references
                 else do
                     let (acs, ats) = getAlters val new old'
                     let acs' = map (AlterColumn name) acs
@@ -347,6 +360,7 @@ data AlterTable = AddUniqueConstraint DBName [DBName]
 data AlterDB = AddTable String
              | AlterColumn DBName AlterColumn'
              | AlterTable DBName AlterTable
+             | AddFunction String
 
 -- | Returns all of the columns in the given table currently in the database.
 getColumns :: (Text -> IO Statement)
@@ -551,6 +565,7 @@ showSqlType (SqlOther t) = T.unpack t
 
 showAlterDb :: AlterDB -> (Bool, Text)
 showAlterDb (AddTable s) = (False, pack s)
+showAlterDb (AddFunction s) = (False, pack s)
 showAlterDb (AlterColumn t (c, ac)) =
     (isUnsafe ac, pack $ showAlter t (c, ac))
   where
