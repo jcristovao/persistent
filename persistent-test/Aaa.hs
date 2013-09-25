@@ -31,20 +31,21 @@ import Database.HsSqlPpp.Ast
 import Database.HsSqlPpp.Pretty
 import Data.Char
 
-import Triggers (triggers)
-
-data PostgreSqlTriggerType = BEFORE | AFTER | INSTEADOF
-  deriving (Eq,Show,Read)
+import Triggers
 
 validateTrigger :: Maybe [[Text]]
                 -> Bool
 validateTrigger Nothing = False
 validateTrigger (Just ps) = let
   params = concat ps
-  triggerType = params !! 0
-  triggerFunc = params !! 1
-  in    (length params == 2)
+  triggerFunc = params !! 0
+  triggerType = params !! 1
+  triggerEvns = drop 2 params
+  in    (length params >= 3)
      && (not . null $ (reads (T.unpack triggerType) :: [(PostgreSqlTriggerType,String)]))
+     && (all (\te ->  not . null
+                   $ (reads (T.unpack te) :: [(PostgreSqlTriggerEvent,String)]))
+             triggerEvns)
      && (isSqlTrigger $ T.unpack triggerFunc)
 
 validateExtra ::  ([[Text]],Map.Map Text [[Text]])
@@ -97,19 +98,34 @@ isSqlTrigger :: String -> Bool
 isSqlTrigger name = any (== Just (map toLower name, map toLower "trigger"))
                   $ fmap (getSqlFuncAttrs) triggers
 
-getSqlCode :: String -> String
-getSqlCode name = maybe "" (LT.unpack . printStatements (PrettyPrintFlags PostgreSQLDialect) . replicate 1 . snd)
-                $ find (\(n,_) -> n == map (toLower) name)
-                $ map (fromJust)
-                $ filter (isJust)
-                $ map (getSqlFuncCode) triggers
+-- I need to pass more information besides a string with the name of the function
+-- If I want to construct a custom trigger, I need the
+-- * trigger name
+-- * trigger events
+-- * table name
+-- * function name
+getSqlCode :: TableName -> FuncName -> [String] -> String
+getSqlCode tn fn tevns = let
+  tf  = maybe ""
+        ( LT.unpack
+        . printStatements (PrettyPrintFlags PostgreSQLDialect)
+        . replicate 1
+        . snd)
+      $ find (\(n,_) -> n == map (toLower) fn)
+      $ map (fromJust)
+      $ filter (isJust)
+      $ map (getSqlFuncCode) triggers
+  tevns' = map (\s -> fst . head $ (reads s :: [(PostgreSqlTriggerEvent,String)])) tevns
+  ct = createAfterTriggerOnRow' fn tevns' tn fn
+  in tf ++ "\n" ++ ct
 
+createAfterTriggerOnRow' name events table fn =
+    LT.unpack
+  . printStatements (PrettyPrintFlags PostgreSQLDialect)
+  . replicate 1
+  $ createAfterTriggerOnRow name events table fn
 {-getSqlTriggers :: [String]-}
 {-getSqlTriggers = filter (not . null)-}
                {-$ fmap (maybe "" id . getSqlFuncName) triggers-}
-
-------------------------------------------------------------------------------
--- PostgreSQL replacements ---------------------------------------------------
-------------------------------------------------------------------------------
 
 

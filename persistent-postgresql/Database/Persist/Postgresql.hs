@@ -16,6 +16,8 @@ module Database.Persist.Postgresql
     , module Database.Persist.Sql
     , ConnectionString
     , GetSqlFunc
+    , TableName
+    , FuncName
     , PostgresConf (..)
     , openSimpleConn
     , prepare'
@@ -24,6 +26,7 @@ module Database.Persist.Postgresql
     , insertSql'
     , migrate'
     ) where
+import Debug.Trace
 
 import Database.Persist.Sql
 import Data.Maybe (mapMaybe)
@@ -74,8 +77,9 @@ import Data.Int (Int64)
 -- for more details on how to create such strings.
 type ConnectionString = ByteString
 
-
-type GetSqlFunc = Maybe (String -> String)
+type FuncName = String
+type TableName= String
+type GetSqlFunc = Maybe (TableName -> FuncName -> [String] -> String)
 
 -- | Create a PostgreSQL connection pool and run the given
 -- action.  The pool is properly released after the action
@@ -310,11 +314,13 @@ unBinary (PG.Binary x) = x
 
 getExtrasSql :: GetSqlFunc -> EntityDef sqlType -> [AlterDB]
 getExtrasSql gsql val = let
-    trigs   = Map.lookup "Triggers" $ entityExtra val
-    entries = replicate 1 . AddFunction
-    fns (Just t) = map (\x -> x !! 1) t
+    trigs = Map.lookup "Triggers" $ entityExtra val
+    fns (Just t) = map (\x -> x !! 0) t
+    tgs (Just t) = map (T.unpack) . concat $ map (drop 2) t
+    func gs = AddFunction . gs . T.unpack . head . fns
+    tbn = T.unpack . unDBName . entityDB $ val
     process getSqlCode = case trigs of
-        Just _ -> entries . getSqlCode . T.unpack $ head $ fns trigs
+        Just n -> (func (\s -> getSqlCode tbn s (tgs trigs)) trigs):[]
         _      -> []
     in maybe [] process gsql
 

@@ -33,7 +33,7 @@ share [mkPersist sqlSettings, mkMigrate "lowerCaseMigrate"] [persistW|
 LowerCaseTable id=my_id
     fullName Text
     Triggers
-        AFTER tableIdTrig
+        tableIdTrig AFTER INSERT OR UPDATE
 RefTable
     someVal Int sql=something_else
     lct LowerCaseTableId
@@ -52,7 +52,7 @@ specs = describe "rename specs" $ do
     it "extra blocks" $ do
         entityExtra (entityDef (Nothing :: Maybe LowerCaseTable)) @?=
             Map.fromList
-                [ ("Triggers", map T.words ["AFTER tableIdTrig"])
+                [ ("Triggers", map T.words ["tableIdTrig AFTER INSERT OR UPDATE"])
                 ]
 
 asIO :: IO a -> IO a
