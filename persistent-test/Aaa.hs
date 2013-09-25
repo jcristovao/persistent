@@ -18,20 +18,38 @@ import Language.Haskell.TH.Quote
 import Database.Persist.TH (mkPersist, mkMigrate, share, sqlSettings, persistLowerCase, persistUpperCase, persistWith)
 import Database.Persist.Quasi
 
-import Data.Maybe
-import Data.List
+import Database.HsSqlPpp.Quote
+import Database.HsSqlPpp.Ast
+import Database.HsSqlPpp.Pretty
+import Database.HsSqlPpp.Annotation
+
 import qualified Data.Map as Map
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as LT
 import Data.Text (Text)
-import Data.Conduit
 
-import Database.HsSqlPpp.Quote
-import Database.HsSqlPpp.Ast
-import Database.HsSqlPpp.Pretty
+import Data.Conduit
+import Data.Maybe
+import Data.List
 import Data.Char
 
 import Triggers
+
+data PostgreSqlTriggerType = BEFORE | AFTER | INSTEADOF
+  deriving (Eq,Read)
+
+instance Show PostgreSqlTriggerType where
+  show BEFORE    = "BEFORE"
+  show AFTER     = "AFTER"
+  show INSTEADOF = "INSTEAD OF"
+
+data PostgreSqlTriggerEvent =  INSERT | UPDATE | DELETE | TRUNCATE | OR
+  deriving (Eq,Show,Read)
+
+
+isSqlTrigger :: String -> Bool
+isSqlTrigger name = any (== Just (map toLower name, map toLower "trigger"))
+                  $ fmap (getSqlFuncAttrs) triggers
 
 validateTrigger :: Maybe [[Text]]
                 -> Bool
@@ -62,20 +80,6 @@ validateExtra (attribs,extras) = let
 persistW :: QuasiQuoter
 persistW = persistWith lowerCaseSettings { validateExtras = Just validateExtra }
 
-{-getSqlFuncName :: Statement -> Maybe String-}
-{-getSqlFuncName sql = case sql of-}
-   {-(CreateFunction _ (Name _ ns) _ _ _ _ _ _)-}
-      {--> if null ns then Nothing else Just (ncStr $ last ns)-}
-   {-_  -> Nothing-}
-
-{-getSqlFuncType :: Statement -> Maybe String-}
-{-getSqlFuncType sql = case sql of-}
-  {-(CreateFunction _ _ _ (SimpleTypeName _ (Name _ ns)) _ _ _ _)-}
-    {--> if null ns-}
-          {-then Nothing-}
-          {-else Just (ncStr $ last ns)-}
-  {-_ -> Nothing-}
-
 getSqlFuncCode :: Statement -> Maybe (String,Statement)
 getSqlFuncCode sql = case sql of
    (CreateFunction _ (Name _ ns) _ _ _ _ (PlpgsqlFnBody _ cd) _)
@@ -93,10 +97,6 @@ getSqlFuncAttrs sql = case sql of
             else Just (ncStr $ last fns,ncStr $ last tns)
    _  -> Nothing
 
-
-isSqlTrigger :: String -> Bool
-isSqlTrigger name = any (== Just (map toLower name, map toLower "trigger"))
-                  $ fmap (getSqlFuncAttrs) triggers
 
 -- I need to pass more information besides a string with the name of the function
 -- If I want to construct a custom trigger, I need the
@@ -124,8 +124,39 @@ createAfterTriggerOnRow' name events table fn =
   . printStatements (PrettyPrintFlags PostgreSQLDialect)
   . replicate 1
   $ createAfterTriggerOnRow name events table fn
-{-getSqlTriggers :: [String]-}
-{-getSqlTriggers = filter (not . null)-}
-               {-$ fmap (maybe "" id . getSqlFuncName) triggers-}
+
+------------------------------------------------------------------------------
+-- Create Triggers -----------------------------------------------------------
+------------------------------------------------------------------------------
+convertTriggerEvents :: [PostgreSqlTriggerEvent] -> [TriggerEvent]
+convertTriggerEvents tes = let
+  conv e = case e of
+    UPDATE -> Just TUpdate
+    INSERT -> Just TInsert
+    DELETE -> Just TDelete
+    TRUNCATE->Just TDelete
+    OR     -> Nothing
+  in mapMaybe conv tes
+
+createAfterTriggerOnRow
+  :: String
+  -> [PostgreSqlTriggerEvent]
+  -> String
+  -> String
+  -> Statement
+createAfterTriggerOnRow name' events' table' fn' = let
+  annot  = Annotation (Just (__FILE__,__LINE__,0)) Nothing  []  Nothing  []
+  name   = Nmc name'
+  events = convertTriggerEvents events'
+  table  = Name annot [Nmc table']
+  fn     = Name annot [Nmc fn']
+  in CreateTrigger
+      annot
+      name
+      TriggerAfter
+      events
+      table
+      EachRow
+      fn []
 
 

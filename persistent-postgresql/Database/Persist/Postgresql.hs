@@ -317,7 +317,7 @@ getExtrasSql gsql val = let
     trigs = Map.lookup "Triggers" $ entityExtra val
     fns (Just t) = map (\x -> x !! 0) t
     tgs (Just t) = map (T.unpack) . concat $ map (drop 2) t
-    func gs = AddFunction . gs . T.unpack . head . fns
+    func gs = AddSQL . gs . T.unpack . head . fns
     tbn = T.unpack . unDBName . entityDB $ val
     process getSqlCode = case trigs of
         Just n -> (func (\s -> getSqlCode tbn s (tgs trigs)) trigs):[]
@@ -379,7 +379,7 @@ data AlterTable = AddUniqueConstraint DBName [DBName]
 data AlterDB = AddTable String
              | AlterColumn DBName AlterColumn'
              | AlterTable DBName AlterTable
-             | AddFunction String
+             | AddSQL String
 
 -- | Returns all of the columns in the given table currently in the database.
 getColumns :: (Text -> IO Statement)
@@ -584,7 +584,7 @@ showSqlType (SqlOther t) = T.unpack t
 
 showAlterDb :: AlterDB -> (Bool, Text)
 showAlterDb (AddTable s) = (False, pack s)
-showAlterDb (AddFunction s) = (False, pack s)
+showAlterDb (AddSQL s) = (False, pack s)
 showAlterDb (AlterColumn t (c, ac)) =
     (isUnsafe ac, pack $ showAlter t (c, ac))
   where
