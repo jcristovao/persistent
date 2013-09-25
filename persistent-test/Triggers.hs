@@ -9,9 +9,13 @@ module Triggers where
 
 import Database.HsSqlPpp.Quote
 import Database.HsSqlPpp.Ast
+import Database.HsSqlPpp.Parser
+import Text.Shakespeare.Text
+import Data.Either
+import Data.Text.Lazy (Text)
 
-tableIdTrig :: Statement
-tableIdTrig = [sqlStmt|
+tableIdTrigT :: Text
+tableIdTrigT = [lt|
     CREATE OR REPLACE FUNCTION tableIdTrig()
       RETURNS trigger AS
     $BODY$
@@ -22,6 +26,29 @@ tableIdTrig = [sqlStmt|
     $BODY$
       LANGUAGE plpgsql VOLATILE;
     |]
+
+tableIdTrig :: Statement
+tableIdTrig = let
+  res = parsePlpgsql
+    (ParseFlags PostgreSQLDialect)
+    __FILE__
+    Nothing
+    tableIdTrigT
+  in either (\pe -> error $ show pe) head res
+
+
+{-tableIdTrig :: Statement-}
+{-tableIdTrig = [sqlStmt|-}
+    {-CREATE OR REPLACE FUNCTION tableIdTrig()-}
+      {-RETURNS trigger AS-}
+    {-$BODY$-}
+      {-BEGIN-}
+        {-PERFORM pg_notify(TG_TABLE_NAME,NEW.id::TEXT);-}
+        {-RETURN NULL;-}
+      {-END;-}
+    {-$BODY$-}
+      {-LANGUAGE plpgsql VOLATILE;-}
+    {-|]-}
 
 tableTrig :: Statement
 tableTrig = [sqlStmt|

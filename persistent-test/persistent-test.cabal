@@ -136,6 +136,7 @@ library
                    , blaze-builder
                    , hssqlppp
                    , hssqlppp-th
+                   , shakespeare-text
 
    if flag(nooverlap)
      cpp-options: -DNO_OVERLAP
@@ -198,6 +199,7 @@ test-suite test
                    , system-fileio
                    , resourcet
                    , hssqlppp
+                   , shakespeare-text
 
     if flag(mongodb)
         cpp-options: -DWITH_MONGODB -DDEBUG
