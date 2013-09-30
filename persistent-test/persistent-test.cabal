@@ -135,7 +135,6 @@ library
                    , silently
                    , blaze-builder
                    , hssqlppp
-                   , hssqlppp-th
                    , shakespeare-text
 
    if flag(nooverlap)

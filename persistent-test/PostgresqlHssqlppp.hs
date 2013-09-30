@@ -10,16 +10,12 @@ module PostgresqlHssqlppp
   , getSqlCode
  ) where
 
-import Database.Persist.Sql hiding (Statement)
-import Database.Persist.Postgresql hiding (Statement)
-import Control.Monad.IO.Class (MonadIO (..))
-import Data.IORef
+import Language.Haskell.TH.Quote (QuasiQuoter)
 
-import Language.Haskell.TH.Quote
-import Database.Persist.TH (mkPersist, mkMigrate, share, sqlSettings, persistLowerCase, persistUpperCase, persistWith)
+import Database.Persist.Postgresql hiding (Statement)
+import Database.Persist.TH (persistWith)
 import Database.Persist.Quasi
 
-import Database.HsSqlPpp.Quote
 import Database.HsSqlPpp.Ast
 import Database.HsSqlPpp.Pretty
 import Database.HsSqlPpp.Annotation
@@ -30,21 +26,20 @@ import qualified Data.Text as T
 import qualified Data.Text.Lazy as LT
 import Data.Text (Text)
 
-import Data.Conduit
 import Data.Maybe
 import Data.List
 import Data.Char
 
 import Debug.Trace
 
--- | The three types of trigger supported by PostgreSQL
-data PostgreSqlTriggerType = BEFORE | AFTER | INSTEADOF
+-- | The two types of trigger supported by PostgreSQL tables.
+-- Views also support 'Instead Of', but views are not supported ATM.
+data PostgreSqlTriggerType = BEFORE | AFTER
   deriving (Eq,Read)
 
 instance Show PostgreSqlTriggerType where
   show BEFORE    = "BEFORE"
   show AFTER     = "AFTER"
-  show INSTEADOF = "INSTEAD OF"
 
 -- | Does not support "UPDATE OF" syntax
 data PostgreSqlTriggerEvent =  INSERT | UPDATE | DELETE | TRUNCATE | OR
@@ -62,7 +57,7 @@ validateTriggers :: [LT.Text]
                 -> Bool
 validateTriggers _ Nothing = False
 validateTriggers sql (Just ps) = all id $ map (validateTrigger sql) ps
-  where validateTrigger sql params = let
+  where validateTrigger sql' params = let
           triggerFunc = params !! 0
           triggerType = params !! 1
           triggerEvns = drop 2 params
@@ -72,7 +67,7 @@ validateTriggers sql (Just ps) = all id $ map (validateTrigger sql) ps
              && ( all (\te ->  not . null
                 $ (reads (T.unpack te) :: [(PostgreSqlTriggerEvent,String)]))
                      triggerEvns)
-             && (isSqlTrigger sql $ T.unpack triggerFunc)
+             && (isSqlTrigger sql' $ T.unpack triggerFunc)
 
 -- | Validate extras: only supports Triggers for now.
 valExtras :: ExtrasValidate LT.Text
@@ -100,7 +95,7 @@ persistU extras =
 -- and SQL.
 getSqlFuncCode :: Statement -> Maybe (String,Statement)
 getSqlFuncCode sql = case sql of
-   (CreateFunction _ (Name _ ns) _ _ _ _ (PlpgsqlFnBody _ cd) _)
+   (CreateFunction _ (Name _ ns) _ _ _ _ (PlpgsqlFnBody _ _) _)
       -> if null ns
           then Nothing
           else Just (ncStr $ last ns, sql)
@@ -125,7 +120,8 @@ getSqlCode triggers tn (entry,line) =
   where getSqlCode' values = let
           result = case entry of
             "Triggers" -> let
-              fn    = head values
+              fn    = values !! 0
+              when  = T.unpack $ values !! 1
               tevns = map (T.unpack) $ drop 2 values
               -- trigger function
               tf  = maybe ""
@@ -137,10 +133,10 @@ getSqlCode triggers tn (entry,line) =
                   $ catMaybes
                   $ map (getSqlFuncCode . parsePostgreSQL) triggers
               -- trigger events
-              tevns' = concat $ map readEvent tevns
-              ct   = createAfterTriggerOnRow'
+              ct   = createTriggerOnRow'
                         (T.unpack fn)
-                        tevns'
+                        (readWhen when)
+                        (concat $ map readEvent tevns)
                         (T.unpack tn)
                         (T.unpack fn)
               in tf ++ ct
@@ -153,7 +149,12 @@ getSqlCode triggers tn (entry,line) =
                   event = reads e :: [(PostgreSqlTriggerEvent,String)]
                   in  if not . null $ event
                        then fmap fst event
-                       else error $ "Invalid Trigger parameter:" ++ show e
+                       else error $ "Invalid Trigger Event:" ++ show e
+                readWhen w = let
+                  when = reads w :: [(PostgreSqlTriggerType,String)]
+                  in  if not . null $ when
+                        then head $ fmap fst when
+                        else error $ "Invalid Trigger Type:" ++ show w
 
 -- | Parse text using HsSqlPpp
 parsePostgreSQL :: LT.Text -> Statement
@@ -173,12 +174,17 @@ parsePostgreSQL sql = let
 ------------------------------------------------------------------------------
 -- Create Triggers -----------------------------------------------------------
 ------------------------------------------------------------------------------
-
-createAfterTriggerOnRow' name events table fn =
+createTriggerOnRow' :: String
+                    -> PostgreSqlTriggerType
+                    -> [PostgreSqlTriggerEvent]
+                    -> String
+                    -> String
+                    -> String
+createTriggerOnRow' name when events table fn =
     LT.unpack
   . printStatements (PrettyPrintFlags PostgreSQLDialect)
   . replicate 1
-  $ createAfterTriggerOnRow name events table fn
+  $ createTriggerOnRow name when events table fn
 
 
 convertTriggerEvents :: [PostgreSqlTriggerEvent] -> [TriggerEvent]
@@ -191,22 +197,29 @@ convertTriggerEvents tes = let
     OR     -> Nothing
   in mapMaybe conv tes
 
-createAfterTriggerOnRow
+convertTriggerType :: PostgreSqlTriggerType -> TriggerWhen
+convertTriggerType tt = case tt of
+  BEFORE    -> TriggerBefore
+  AFTER     -> TriggerAfter
+
+createTriggerOnRow
   :: String
+  -> PostgreSqlTriggerType
   -> [PostgreSqlTriggerEvent]
   -> String
   -> String
   -> Statement
-createAfterTriggerOnRow name' events' table' fn' = let
+createTriggerOnRow name' typ' events' table' fn' = let
   annot  = Annotation (Just (__FILE__,__LINE__,0)) Nothing  []  Nothing  []
   name   = Nmc name'
+  typ    = convertTriggerType typ'
   events = convertTriggerEvents events'
   table  = Name annot [Nmc table']
   fn     = Name annot [Nmc fn']
   in CreateTrigger
       annot
       name
-      TriggerAfter
+      typ
       events
       table
       EachRow

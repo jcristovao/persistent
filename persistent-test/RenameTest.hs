@@ -36,7 +36,7 @@ LowerCaseTable id=my_id
     fullName Text
     Triggers
         tableIdTrig AFTER INSERT OR UPDATE
-        tableTrig AFTER DELETE
+        tableTrig INSTEADOF DELETE
 RefTable
     someVal Int sql=something_else
     lct LowerCaseTableId
