@@ -9,7 +9,6 @@ module Database.Persist.Quasi
     , stripId
     , nullable
     , ExtrasValidate
-    , ExtrasValidate'
 #if TEST
     , Token (..)
     , tokenize
@@ -23,7 +22,6 @@ import Data.Char
 import Data.Maybe (mapMaybe, fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.Lazy as LT
 import Control.Arrow ((&&&))
 import qualified Data.Map as M
 import Data.List (foldl')
@@ -76,8 +74,14 @@ parseFieldType t0 =
             PSSuccess x t' -> goMany (front . (x:)) t'
             _ -> PSSuccess (front []) t
 
-type ExtrasValidate  = [LT.Text] -> M.Map Text [ExtraLine] -> M.Map Text [ExtraLine]
 type ExtrasValidate' = M.Map Text [ExtraLine] -> M.Map Text [ExtraLine]
+-- | The user can provide a function that validates the extra lines and either
+-- does not modify them if everything is OK, or it errors if they don't follow
+-- the custom (user defined) format.
+-- This error will appear at compile time, since we are dealing with Quasiquotation
+-- and Template Haskell. The first parameter may be useful to pass aditional
+-- quasiquotations, defined on other files.
+type ExtrasValidate a  = [a] -> ExtrasValidate'
 
 data PersistSettings = PersistSettings
     { psToDBName :: !(Text -> Text)
@@ -86,6 +90,7 @@ data PersistSettings = PersistSettings
     --
     -- Since 1.2
     , validateExtras :: !(Maybe ExtrasValidate')
+    -- ^ Extra settings function validation
     }
 
 upperCaseSettings :: PersistSettings

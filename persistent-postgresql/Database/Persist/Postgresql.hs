@@ -17,14 +17,8 @@ module Database.Persist.Postgresql
     , ConnectionString
     , GetExtrasSql
     , ExtrasSql
-    , TableName
     , PostgresConf (..)
     , openSimpleConn
-    , prepare'
-    , execute'
-    , escape
-    , insertSql'
-    , migrate'
     ) where
 
 import Database.Persist.Sql
@@ -68,6 +62,7 @@ import Data.Aeson
 import Control.Monad (forM, mzero)
 import System.Environment (getEnvironment)
 import Data.Int (Int64)
+
 
 -- | A @libpq@ connection string.  A simple example of connection
 -- string would be @\"host=localhost port=5432 user=test
@@ -315,20 +310,8 @@ unBinary (PG.Binary x) = x
 
 getExtrasSql :: (GetExtrasSql,[LT.Text]) -> EntityDef sqlType -> [AlterDB]
 getExtrasSql (gsql,sql) val = let
-    {-trigs     = Map.findWithDefault [] "Triggers" $ entityExtra val-}
-    {-functions = map head trigs-}
-    {-events    = map T.unpack . concat $ map (drop 2) trigs-}
-    {-f_n_e     = zip functions events-}
     process = gsql sql (unDBName . entityDB $ val)
   in map (AddSQL . process) $ Map.toList (entityExtra val)
-
-    {-func gs = AddSQL . gs . T.unpack . head . fns-}
-    {-tbn = T.unpack . unDBName . entityDB $ val-}
-    {-process getSqlCode = case trigs of-}
-        {-Just n -> (func (\s -> getSqlCode tbn s (tgs trigs)) trigs):[]-}
-        {-_      -> []-}
-    {-in maybe [] process gsql-}
-
 
 migrate' :: ExtrasSql
          -> [EntityDef a]

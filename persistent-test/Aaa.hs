@@ -67,7 +67,7 @@ validateTrigger sql (Just ps) = let
              triggerEvns)
      && (isSqlTrigger sql $ T.unpack triggerFunc)
 
-valExtras :: ExtrasValidate
+valExtras :: ExtrasValidate LT.Text
 valExtras sql extras = let
     trigs= Map.lookup "Triggers" extras
     test =  isJust    (trigs) && validateTrigger sql trigs
