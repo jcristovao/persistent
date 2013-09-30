@@ -30,12 +30,13 @@ import H
 #if WITH_MONGODB
 mkPersist persistSettings [persistLowerCase|
 #else
-share [mkPersist sqlSettings, mkMigrate "lowerCaseMigrate"] [persistWithSQL|
+share [mkPersist sqlSettings, mkMigrate "lowerCaseMigrate"] [persistLowerWithSql|
 #endif
 LowerCaseTable id=my_id
     fullName Text
     Triggers
         tableIdTrig AFTER INSERT OR UPDATE
+        tableTrig AFTER DELETE
 RefTable
     someVal Int sql=something_else
     lct LowerCaseTableId

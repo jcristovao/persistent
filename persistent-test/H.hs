@@ -3,4 +3,6 @@ module H where
 import Triggers
 import PostgresqlHssqlppp
 
-persistWithSQL = persistW triggers
+persistLowerWithSql = persistL triggers
+
+persistUpperWithSql = persistU triggers
