@@ -325,6 +325,7 @@ migrate' :: ExtrasSql a
          -> IO (Either [Text] [(Bool, Text)])
 migrate' esql allDefs getter val = fmap (fmap $ map showAlterDb) $ do
     let name = entityDB val
+        getExtras = maybe (const []) getExtrasSql esql
     old <- getColumns getter val
     case partitionEithers old of
         ([], old'') -> do
@@ -347,14 +348,13 @@ migrate' esql allDefs getter val = fmap (fmap $ map showAlterDb) $ do
                     let uniques = flip concatMap (snd new) $ \(uname, ucols) ->
                             [AlterTable name $ AddUniqueConstraint uname ucols]
                         references = mapMaybe (getAddReference name) $ fst new
-                        getExtras  = maybe (const []) getExtrasSql esql
                     return $ Right $ addTable : uniques ++ references
                                                         ++ (getExtras val)
                 else do
                     let (acs, ats) = getAlters val new old'
                     let acs' = map (AlterColumn name) acs
                     let ats' = map (AlterTable name) ats
-                    return $ Right $ acs' ++ ats'
+                    return $ Right $ acs' ++ ats' ++ (getExtras val)
         (errs, _) -> return $ Left errs
 
 type SafeToRemove = Bool
