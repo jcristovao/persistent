@@ -4,7 +4,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleContexts #-}
-module Aaa
+module PostgresqlHssqlppp
  (  persistW
   , getSqlCode
  ) where
@@ -106,11 +106,7 @@ getSqlFuncAttrs sql = case sql of
 -- * trigger events
 -- * table name
 -- * function name
-{-getSqlCode :: TableName -> FuncName -> [String] -> String-}
-
-           -- [LT.Text] -> TableName -> ExtrasEntry -> Text
-           -- TODO: rename it from triggers to something more generic
-getSqlCode :: GetExtrasSql
+getSqlCode :: GetExtrasSql LT.Text
 getSqlCode triggers tn (entry,line) = let
   values = concat line
   result = case entry of

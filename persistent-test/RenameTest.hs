@@ -23,7 +23,7 @@ import qualified Data.Text as T
 
 import Init
 import Triggers
-import Aaa
+import PostgresqlHssqlppp
 import H
 
 -- Test lower case names

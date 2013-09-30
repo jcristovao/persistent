@@ -89,7 +89,7 @@ library
                      Database.Sqlite
 
                      Triggers
-                     Aaa
+                     PostgresqlHssqlppp
 
     hs-source-dirs: ., test, persistent, persistent-template, persistent-sqlite, persistent-postgresql, persistent-mysql, persistent-couchdb
 

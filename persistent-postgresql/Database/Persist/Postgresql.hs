@@ -51,7 +51,6 @@ import qualified Data.Conduit.List as CL
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.Text as T
-import qualified Data.Text.Lazy as LT
 import qualified Data.Text.Encoding as T
 import qualified Blaze.ByteString.Builder.Char8 as BBB
 import qualified Blaze.ByteString.Builder.ByteString as BBS
@@ -73,9 +72,9 @@ import Data.Int (Int64)
 type ConnectionString = ByteString
 
 type TableName  = Text
-type ExtrasEntry  = (Text,[ExtraLine])
-type GetExtrasSql = ([LT.Text] -> TableName -> ExtrasEntry -> Text)
-type ExtrasSql = Maybe (GetExtrasSql,[LT.Text])
+type ExtrasEntry = (Text,[ExtraLine])
+type GetExtrasSql a = [a] -> TableName -> ExtrasEntry -> Text
+type ExtrasSql a = Maybe (GetExtrasSql a,[a])
 
 -- | Create a PostgreSQL connection pool and run the given
 -- action.  The pool is properly released after the action
@@ -308,13 +307,13 @@ getGetter other   = error $ "Postgresql.getGetter: type " ++
 unBinary :: PG.Binary a -> a
 unBinary (PG.Binary x) = x
 
-getExtrasSql :: (GetExtrasSql,[LT.Text]) -> EntityDef sqlType -> [AlterDB]
+getExtrasSql :: (GetExtrasSql a, [a]) -> EntityDef sqlType -> [AlterDB]
 getExtrasSql (gsql,sql) val = let
     process = gsql sql (unDBName . entityDB $ val)
   in map (AddSQL . process) $ Map.toList (entityExtra val)
 
-migrate' :: ExtrasSql
-         -> [EntityDef a]
+migrate' :: ExtrasSql a
+         -> [EntityDef b]
          -> (Text -> IO Statement)
          -> EntityDef SqlType
          -> IO (Either [Text] [(Bool, Text)])
@@ -343,10 +342,8 @@ migrate' esql allDefs getter val = fmap (fmap $ map showAlterDb) $ do
                             [AlterTable name $ AddUniqueConstraint uname ucols]
                         references = mapMaybe (getAddReference name) $ fst new
                         getExtras  = maybe (const []) getExtrasSql esql
-                    if not . null . getExtras $ val
-                      then return $ Right $ addTable : uniques ++ references
-                                                               ++ (getExtras val)
-                      else return $ Right $ addTable : uniques ++ references
+                    return $ Right $ addTable : uniques ++ references
+                                                        ++ (getExtras val)
                 else do
                     let (acs, ats) = getAlters val new old'
                     let acs' = map (AlterColumn name) acs
@@ -767,7 +764,7 @@ udToPair ud = (uniqueDBName ud, map snd $ uniqueFields ud)
 -- 'ConnectionPool' outside the action since it may be already
 -- been released.
 withPostgresqlPool' :: MonadIO m
-                   => ExtrasSql
+                   => ExtrasSql e
                    -- ^ Function to get custom SQL to be executed
                    -- at migration
                    -> ConnectionString
@@ -787,7 +784,7 @@ withPostgresqlPool' gsql ci = withSqlPool $ open'' gsql ci
 -- unneeded.  Use 'withPostgresqlPool' for an automatic resource
 -- control.
 createPostgresqlPool':: MonadIO m
-                     => ExtrasSql
+                     => ExtrasSql e
                      -- ^ Function to get custom SQL to be executed
                      -- at migration
                      -> ConnectionString
@@ -802,19 +799,19 @@ createPostgresqlPool' gsql ci = createSqlPool $ open'' gsql ci
 -- | Same as 'withPostgresqlPool', but instead of opening a pool
 -- of connections, only one connection is opened.
 withPostgresqlConn' :: (MonadIO m, MonadBaseControl IO m)
-                   => ExtrasSql
+                   => ExtrasSql e
                    -> ConnectionString
                    -> (Connection -> m a)
                    -> m a
 withPostgresqlConn' gsql = withSqlConn . (open'' gsql)
 
 
-open'' :: ExtrasSql -> ConnectionString -> IO Connection
+open'' :: ExtrasSql e -> ConnectionString -> IO Connection
 open'' gsql cstr = do
     PG.connectPostgreSQL cstr >>= openSimpleConn' gsql
 
 -- | Generate a 'Connection' from a 'PG.Connection'
-openSimpleConn' :: ExtrasSql -> PG.Connection -> IO Connection
+openSimpleConn' :: ExtrasSql e -> PG.Connection -> IO Connection
 openSimpleConn' gsql conn = do
     smap <- newIORef $ Map.empty
     return Connection

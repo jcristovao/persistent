@@ -48,6 +48,7 @@ import Test.QuickCheck
 
 import Database.Persist
 import Data.Text (Text)
+import qualified Data.Text.Lazy as LT
 
 #ifdef WITH_MONGODB
 import qualified Database.MongoDB as MongoDB
@@ -170,7 +171,7 @@ runConn f = runNoLoggingT $ do
 
 -- sqlite_database = ":memory:"
 runConn':: (MonadIO m, MonadBaseControl IO m)
-        => ExtrasSql
+        => ExtrasSql LT.Text
         -> SqlPersistT (NoLoggingT m) t -> m ()
 runConn' esql f = runNoLoggingT $ do
     _<-withSqlitePool sqlite_database 1 $ runSqlPool f

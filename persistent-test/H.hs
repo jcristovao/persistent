@@ -1,6 +1,6 @@
 module H where
 
 import Triggers
-import Aaa
+import PostgresqlHssqlppp
 
 persistWithSQL = persistW triggers
