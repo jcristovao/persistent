@@ -61,13 +61,17 @@ validateTriggers sql (Just ps) = all id $ map (validateTrigger sql) ps
           triggerFunc = params !! 0
           triggerType = params !! 1
           triggerEvns = drop 2 params
-          in    (length params >= 3)
-             && ( not . null
-                $ (reads (T.unpack triggerType) :: [(PostgreSqlTriggerType,String)]))
-             && ( all (\te ->  not . null
-                $ (reads (T.unpack te) :: [(PostgreSqlTriggerEvent,String)]))
-                     triggerEvns)
-             && (isSqlTrigger sql' $ T.unpack triggerFunc)
+          t1 = length params >= 3 || error ("Insufficient parameters" ++ show params)
+          t2 = ( not . null
+               $ (reads (T.unpack triggerType) :: [(PostgreSqlTriggerType,String)]))
+             || error ("Invalid trigger type:" ++ show triggerType)
+          t3 = ( all (\te ->  not . null
+                     $ (reads (T.unpack te) :: [(PostgreSqlTriggerEvent,String)]))
+                     $ triggerEvns)
+             || error ("Invalid trigger events:" ++ show triggerEvns)
+          t4 = (isSqlTrigger sql' $ T.unpack triggerFunc)
+             || error ("There is no (Postgre)SQL function with name:" ++ show triggerFunc)
+          in all id [t1,t2,t3,t4]
 
 -- | Validate extras: only supports Triggers for now.
 valExtras :: ExtrasValidate LT.Text
