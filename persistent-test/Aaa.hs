@@ -22,6 +22,7 @@ import Database.HsSqlPpp.Quote
 import Database.HsSqlPpp.Ast
 import Database.HsSqlPpp.Pretty
 import Database.HsSqlPpp.Annotation
+import Database.HsSqlPpp.Parser
 
 import qualified Data.Map as Map
 import qualified Data.Text as T
@@ -32,8 +33,6 @@ import Data.Conduit
 import Data.Maybe
 import Data.List
 import Data.Char
-
-import Triggers
 
 data PostgreSqlTriggerType = BEFORE | AFTER | INSTEADOF
   deriving (Eq,Read)
@@ -47,14 +46,16 @@ data PostgreSqlTriggerEvent =  INSERT | UPDATE | DELETE | TRUNCATE | OR
   deriving (Eq,Show,Read)
 
 
-isSqlTrigger :: String -> Bool
-isSqlTrigger name = any (== Just (map toLower name, map toLower "trigger"))
-                  $ fmap (getSqlFuncAttrs) triggers
+isSqlTrigger :: [LT.Text] -> String -> Bool
+isSqlTrigger sql name = any (== Just (map toLower name, map toLower "trigger"))
+                      $ fmap getSqlFuncAttrs
+                      $ fmap parsePostgreSQL sql
 
-validateTrigger :: Maybe [[Text]]
+validateTrigger :: [LT.Text]
+                -> Maybe [[Text]]
                 -> Bool
-validateTrigger Nothing = False
-validateTrigger (Just ps) = let
+validateTrigger _ Nothing = False
+validateTrigger sql (Just ps) = let
   params = concat ps
   triggerFunc = params !! 0
   triggerType = params !! 1
@@ -64,21 +65,22 @@ validateTrigger (Just ps) = let
      && (all (\te ->  not . null
                    $ (reads (T.unpack te) :: [(PostgreSqlTriggerEvent,String)]))
              triggerEvns)
-     && (isSqlTrigger $ T.unpack triggerFunc)
+     && (isSqlTrigger sql $ T.unpack triggerFunc)
 
-validateExtra ::  ([[Text]],Map.Map Text [[Text]])
-               -> ([[Text]],Map.Map Text [[Text]])
-validateExtra (attribs,extras) = let
+valExtras :: ExtrasValidate
+valExtras sql extras = let
     trigs= Map.lookup "Triggers" extras
-    test = isJust (trigs) && validateTrigger trigs
+    test =  isJust    (trigs) && validateTrigger sql trigs
          || isNothing (trigs)
-    extras' = if test
-                then extras
-                else error $ "Invalid SQL Triggers:" ++ (show $ concat . fromJust $ trigs)
-  in (attribs,extras')
+    in if test
+          then extras
+          else error $ "Invalid SQL Triggers:" ++ (show $ concat . fromJust $ trigs)
 
-persistW :: QuasiQuoter
-persistW = persistWith lowerCaseSettings { validateExtras = Just validateExtra }
+persistW :: [LT.Text] -> QuasiQuoter
+persistW extras =
+  persistWith
+    lowerCaseSettings { validateExtras = Just (valExtras extras) }
+
 
 getSqlFuncCode :: Statement -> Maybe (String,Statement)
 getSqlFuncCode sql = case sql of
@@ -104,26 +106,63 @@ getSqlFuncAttrs sql = case sql of
 -- * trigger events
 -- * table name
 -- * function name
-getSqlCode :: TableName -> FuncName -> [String] -> String
-getSqlCode tn fn tevns = let
-  tf  = maybe ""
-        ( LT.unpack
-        . printStatements (PrettyPrintFlags PostgreSQLDialect)
-        . replicate 1
-        . snd)
-      $ find (\(n,_) -> n == map (toLower) fn)
-      $ map (fromJust)
-      $ filter (isJust)
-      $ map (getSqlFuncCode) triggers
-  tevns' = map (\s -> fst . head $ (reads s :: [(PostgreSqlTriggerEvent,String)])) tevns
-  ct = createAfterTriggerOnRow' fn tevns' tn fn
-  in tf ++ "\n" ++ ct
+{-getSqlCode :: TableName -> FuncName -> [String] -> String-}
+
+           -- [LT.Text] -> TableName -> ExtrasEntry -> Text
+           -- TODO: rename it from triggers to something more generic
+getSqlCode :: GetExtrasSql
+getSqlCode triggers tn (entry,line) = let
+  values = concat line
+  result = case entry of
+    "Triggers" -> let
+      fn    = head values
+      tevns = map (T.unpack) $ drop 2 values
+      -- trigger function
+      tf  = maybe ""
+            ( LT.unpack
+            . printStatements (PrettyPrintFlags PostgreSQLDialect)
+            . replicate 1
+            . snd)
+          $ find (\(n,_) -> n == (T.unpack . T.toLower) fn)
+          $ catMaybes
+          $ map (getSqlFuncCode . parsePostgreSQL) triggers
+      -- trigger events
+      tevns' = concat $ map readEvent tevns
+      ct   = createAfterTriggerOnRow' (T.unpack fn) tevns' (T.unpack tn) (T.unpack fn)
+      in tf ++ ct
+    _ -> error "Only PostgreSQL triggers supported for the moment"
+  in if length values >= 3
+       then T.pack result
+       else error "Invalid Trigger Specification"
+
+  where readEvent e = let
+          event = reads e :: [(PostgreSqlTriggerEvent,String)]
+          in if not . null $ event
+               then fmap fst event
+               else error "Invalid Trigger parameter"
 
 createAfterTriggerOnRow' name events table fn =
     LT.unpack
   . printStatements (PrettyPrintFlags PostgreSQLDialect)
   . replicate 1
   $ createAfterTriggerOnRow name events table fn
+
+------------------------------------------------------------------------------
+-- Parse SQL ----- -----------------------------------------------------------
+------------------------------------------------------------------------------
+parsePostgreSQL :: LT.Text -> Statement
+parsePostgreSQL sql = let
+  res = parsePlpgsql
+    (ParseFlags PostgreSQLDialect)
+    __FILE__
+    Nothing
+    sql
+  in either
+      (\pe -> error $ show pe)
+      (\s  -> if null s
+                then error $ "Valid SQL returned no statements"
+                else head s)
+      res
 
 ------------------------------------------------------------------------------
 -- Create Triggers -----------------------------------------------------------

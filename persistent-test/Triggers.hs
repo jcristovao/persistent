@@ -6,52 +6,24 @@
 {-# LANGUAGE FlexibleContexts #-}
 module Triggers where
 
-
-import Database.HsSqlPpp.Quote
-import Database.HsSqlPpp.Ast
-import Database.HsSqlPpp.Parser
 import Text.Shakespeare.Text
-import Data.Either
 import Data.Text.Lazy (Text)
 
-tableIdTrigT :: Text
-tableIdTrigT = [lt|
+tableIdTrig :: Text
+tableIdTrig = [lt|
     CREATE OR REPLACE FUNCTION tableIdTrig()
       RETURNS trigger AS
     $BODY$
       BEGIN
         PERFORM pg_notify(TG_TABLE_NAME,NEW.id::TEXT);
         RETURN NULL;
-      END;
+      END
     $BODY$
       LANGUAGE plpgsql VOLATILE;
     |]
 
-tableIdTrig :: Statement
-tableIdTrig = let
-  res = parsePlpgsql
-    (ParseFlags PostgreSQLDialect)
-    __FILE__
-    Nothing
-    tableIdTrigT
-  in either (\pe -> error $ show pe) head res
-
-
-{-tableIdTrig :: Statement-}
-{-tableIdTrig = [sqlStmt|-}
-    {-CREATE OR REPLACE FUNCTION tableIdTrig()-}
-      {-RETURNS trigger AS-}
-    {-$BODY$-}
-      {-BEGIN-}
-        {-PERFORM pg_notify(TG_TABLE_NAME,NEW.id::TEXT);-}
-        {-RETURN NULL;-}
-      {-END;-}
-    {-$BODY$-}
-      {-LANGUAGE plpgsql VOLATILE;-}
-    {-|]-}
-
-tableTrig :: Statement
-tableTrig = [sqlStmt|
+tableTrig :: Text
+tableTrig = [lt|
     CREATE OR REPLACE FUNCTION tableTrig()
       RETURNS trigger AS
     $BODY$
@@ -63,8 +35,8 @@ tableTrig = [sqlStmt|
       LANGUAGE plpgsql VOLATILE;
     |]
 
-notTrig :: Statement
-notTrig = [sqlStmt|
+notTrig :: Text
+notTrig = [lt|
     CREATE OR REPLACE FUNCTION notTrig()
       RETURNS INT AS
     $BODY$
@@ -77,7 +49,7 @@ notTrig = [sqlStmt|
     |]
 
 
-triggers :: [Statement]
+triggers :: [Text]
 triggers = [tableTrig, tableIdTrig, notTrig]
 
 

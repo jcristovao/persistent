@@ -8,6 +8,8 @@ module Database.Persist.Quasi
     , lowerCaseSettings
     , stripId
     , nullable
+    , ExtrasValidate
+    , ExtrasValidate'
 #if TEST
     , Token (..)
     , tokenize
@@ -21,6 +23,7 @@ import Data.Char
 import Data.Maybe (mapMaybe, fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Lazy as LT
 import Control.Arrow ((&&&))
 import qualified Data.Map as M
 import Data.List (foldl')
@@ -73,8 +76,8 @@ parseFieldType t0 =
             PSSuccess x t' -> goMany (front . (x:)) t'
             _ -> PSSuccess (front []) t
 
-type ExtrasValidate =  ([[Text]],M.Map Text [[Text]])
-                    -> ([[Text]],M.Map Text [[Text]])
+type ExtrasValidate  = [LT.Text] -> M.Map Text [ExtraLine] -> M.Map Text [ExtraLine]
+type ExtrasValidate' = M.Map Text [ExtraLine] -> M.Map Text [ExtraLine]
 
 data PersistSettings = PersistSettings
     { psToDBName :: !(Text -> Text)
@@ -82,7 +85,7 @@ data PersistSettings = PersistSettings
     -- ^ Whether fields are by default strict. Default value: @True@.
     --
     -- Since 1.2
-    , validateExtras :: !(Maybe ExtrasValidate)
+    , validateExtras :: !(Maybe ExtrasValidate')
     }
 
 upperCaseSettings :: PersistSettings
@@ -212,8 +215,8 @@ mkEntityDef ps name entattribs lines =
         case T.uncons name of
             Just ('+', x) -> (True, x)
             _ -> (False, name)
-    (attribs, extras) = (maybe id id (validateExtras ps))
-                      $ splitExtras lines
+    extrasProcess = maybe id id (validateExtras ps)
+    (attribs, extras) = fmap extrasProcess $ splitExtras lines
     idName [] = "id"
     idName (t:ts) =
         case T.stripPrefix "id=" t of
