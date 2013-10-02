@@ -49,6 +49,7 @@ data PostgreSqlTriggerEvent =  INSERT | UPDATE | DELETE | TRUNCATE | OR
 isSqlTrigger :: [LT.Text] -> String -> Bool
 isSqlTrigger sql name = any (== Just (map toLower name, map toLower "trigger"))
                       $ fmap getSqlFuncAttrs
+                      $ concat
                       $ fmap parsePostgreSQL sql
 
 -- | Validate trigger entry in extras
@@ -135,19 +136,19 @@ getSqlCode triggers tn (entry,line) =
                     . snd)
                   $ find (\(n,_) -> n == (T.unpack . T.toLower) fn)
                   $ catMaybes
-                  $ map (getSqlFuncCode . parsePostgreSQL) triggers
+                  $ map (getSqlFuncCode . head . parsePostgreSQL) triggers
               -- trigger events
-              ct   = createTriggerOnRow'
+              ct   = createRowTrigger'
                         (T.unpack fn)
                         (readWhen when)
                         (concat $ map readEvent tevns)
                         (T.unpack tn)
                         (T.unpack fn)
-              in tf ++ ct
+              in if length values >= 3
+                    then tf ++ ct
+                    else error $ "Invalid Trigger Specification" ++ show values
             _ -> error "Only PostgreSQL triggers supported for the moment"
-          in if length values >= 3
-               then T.pack result
-               else error "Invalid Trigger Specification"
+          in T.pack result
 
           where readEvent e = let
                   event = reads e :: [(PostgreSqlTriggerEvent,String)]
@@ -161,7 +162,7 @@ getSqlCode triggers tn (entry,line) =
                         else error $ "Invalid Trigger Type:" ++ show w
 
 -- | Parse text using HsSqlPpp
-parsePostgreSQL :: LT.Text -> Statement
+parsePostgreSQL :: LT.Text -> [Statement]
 parsePostgreSQL sql = let
   res = parsePlpgsql
     (ParseFlags PostgreSQLDialect)
@@ -172,25 +173,26 @@ parsePostgreSQL sql = let
       (\pe -> error $ show pe)
       (\s  -> if null s
                 then error $ "Valid SQL returned no statements"
-                else head s)
+                else s)
       res
 
 ------------------------------------------------------------------------------
 -- Create Triggers -----------------------------------------------------------
 ------------------------------------------------------------------------------
-createTriggerOnRow' :: String
+-- | Convert a trigger on a row into valid (usable) SQL
+createRowTrigger' :: String
                     -> PostgreSqlTriggerType
                     -> [PostgreSqlTriggerEvent]
                     -> String
                     -> String
                     -> String
-createTriggerOnRow' name when events table fn =
+createRowTrigger' name when events table fn =
     LT.unpack
   . printStatements (PrettyPrintFlags PostgreSQLDialect)
-  . replicate 1
-  $ createTriggerOnRow name when events table fn
+  $ createRowTrigger name when events table fn
 
 
+-- | Convert Internal representation to HsSqlPpp
 convertTriggerEvents :: [PostgreSqlTriggerEvent] -> [TriggerEvent]
 convertTriggerEvents tes = let
   conv e = case e of
@@ -201,32 +203,29 @@ convertTriggerEvents tes = let
     OR     -> Nothing
   in mapMaybe conv tes
 
+-- | Convert Internal representation to HsSqlPpp
 convertTriggerType :: PostgreSqlTriggerType -> TriggerWhen
 convertTriggerType tt = case tt of
   BEFORE    -> TriggerBefore
   AFTER     -> TriggerAfter
 
-createTriggerOnRow
+-- | Convert a trigger on row quasiquote into a valid statement
+createRowTrigger
   :: String
   -> PostgreSqlTriggerType
   -> [PostgreSqlTriggerEvent]
   -> String
   -> String
-  -> Statement
-createTriggerOnRow name' typ' events' table' fn' = let
+  -> [Statement]
+createRowTrigger name' typ' events' table' fn' = let
   annot  = Annotation (Just (__FILE__,__LINE__,0)) Nothing  []  Nothing  []
   name   = Nmc name'
   typ    = convertTriggerType typ'
   events = convertTriggerEvents events'
   table  = Name annot [Nmc table']
   fn     = Name annot [Nmc fn']
-  in CreateTrigger
-      annot
-      name
-      typ
-      events
-      table
-      EachRow
-      fn []
+  createt= CreateTrigger annot name typ events table EachRow fn []
+  dropt  = DropTrigger annot IfExists name table Cascade
+  in [dropt,createt]
 
 
