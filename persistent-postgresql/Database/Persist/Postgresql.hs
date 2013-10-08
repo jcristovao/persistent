@@ -41,7 +41,7 @@ import Data.IORef
 import qualified Data.Map as Map
 import Data.Either (partitionEithers)
 import Control.Arrow
-import Data.List (sort, groupBy)
+import Data.List (sort, groupBy, nub)
 import Data.Function (on)
 import Data.Conduit
 import qualified Data.Conduit.List as CL
@@ -157,12 +157,12 @@ prepare' conn sql = do
         , stmtQuery = withStmt' conn query
         }
 
-insertSql' :: DBName -> [DBName] -> DBName -> InsertSqlResult
-insertSql' t cols id' = ISRSingle $ pack $ concat
+insertSql' :: DBName -> [FieldDef SqlType] -> DBName -> [PersistValue] -> InsertSqlResult
+insertSql' t cols id' _ = ISRSingle $ pack $ concat
     [ "INSERT INTO "
     , T.unpack $ escape t
     , "("
-    , intercalate "," $ map (T.unpack . escape) cols
+    , intercalate "," $ map (T.unpack . escape . fieldDB) cols
     , ") VALUES("
     , intercalate "," (map (const "?") cols)
     , ") RETURNING "
@@ -324,12 +324,16 @@ getExtrasSql (gsql,sql) val = let
     getSql = gsql sql tableName
   in map (AddSQL . getSql) $ Map.toList (entityExtra val)
 
+
 migrate' :: ExtrasSql a
          -> [EntityDef b]
          -> (Text -> IO Statement)
          -> EntityDef SqlType
          -> IO (Either [Text] [(Bool, Text)])
-migrate' esql allDefs getter val = fmap (fmap $ map showAlterDb) $ do
+                             -- We nub because there might be duplicate statements generated
+                             -- such as AlterColumn DropReference and AlterTable DropConstraint
+                             -- for the same reference constraint.
+migrate' esql allDefs getter val = fmap (fmap $ nub . map showAlterDb) $ do
     let name = entityDB val
     old <- getColumns getter val
     case partitionEithers old of
@@ -389,7 +393,7 @@ getColumns getter def = do
             ]
     cs <- runResourceT $ stmtQuery stmt vals $$ helper
     stmt' <- getter
-        "SELECT constraint_name, column_name FROM information_schema.constraint_column_usage WHERE table_name=? AND column_name <> ? ORDER BY constraint_name, column_name"
+        "SELECT constraint_name, column_name FROM information_schema.key_column_usage WHERE table_name=? AND column_name <> ? ORDER BY constraint_name, column_name"
     us <- runResourceT $ stmtQuery stmt' vals $$ helperU
     return $ cs ++ us
   where
@@ -471,6 +475,7 @@ getColumn getter tname [PersistText x, PersistText y, PersistText z, d, npre, ns
                         , cNull = y == "YES"
                         , cSqlType = t
                         , cDefault = d''
+                        , cDefaultConstraintName = Nothing
                         , cMaxLen = Nothing
                         , cReference = ref
                         }
@@ -515,10 +520,10 @@ getColumn _ _ x =
     return $ Left $ pack $ "Invalid result from information_schema: " ++ show x
 
 findAlters :: Column -> [Column] -> ([AlterColumn'], [Column])
-findAlters col@(Column name isNull sqltype def _maxLen ref) cols =
+findAlters col@(Column name isNull sqltype def _cn _maxLen ref) cols =
     case filter (\c -> cName c == name) cols of
         [] -> ([(name, Add' col)], cols)
-        Column _ isNull' sqltype' def' _maxLen' ref':_ ->
+        Column _ isNull' sqltype' def' _cn _maxLen' ref':_ ->
             let refDrop Nothing = []
                 refDrop (Just (_, cname)) = [(name, DropReference cname)]
                 refAdd Nothing = []
@@ -547,13 +552,13 @@ findAlters col@(Column name isNull sqltype def _maxLen ref) cols =
 
 -- | Get the references to be added to a table for the given column.
 getAddReference :: DBName -> Column -> Maybe AlterDB
-getAddReference table (Column n _nu _ _def _maxLen ref) =
+getAddReference table (Column n _nu _ _def _cn _maxLen ref) =
     case ref of
         Nothing -> Nothing
         Just (s, _) -> Just $ AlterColumn table (n, AddReference s)
 
 showColumn :: Column -> String
-showColumn (Column n nu sqlType def _maxLen _ref) = concat
+showColumn (Column n nu sqlType def _cn _maxLen _ref) = concat
     [ T.unpack $ escape n
     , " "
     , showSqlType sqlType
@@ -765,7 +770,6 @@ refName (DBName table) (DBName column) =
 udToPair :: UniqueDef -> (DBName, [DBName])
 udToPair ud = (uniqueDBName ud, map snd $ uniqueFields ud)
 
-
 -- | Similar to @openSimpleConn , but with additional user defined
 -- migration code generation tool, to add custom SQL code to the migration
 -- process.
@@ -785,5 +789,3 @@ openSimpleConn' gsql conn = do
         , connNoLimit    = "LIMIT ALL"
         , connRDBMS      = "postgresql"
         }
-
-
