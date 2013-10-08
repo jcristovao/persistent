@@ -8,7 +8,7 @@ module Database.Persist.Quasi
     , lowerCaseSettings
     , stripId
     , nullable
-    , ExtrasValidate
+    , ValidateExtras
 #if TEST
     , Token (..)
     , tokenize
@@ -74,14 +74,17 @@ parseFieldType t0 =
             PSSuccess x t' -> goMany (front . (x:)) t'
             _ -> PSSuccess (front []) t
 
-type ExtrasValidate' = M.Map Text [ExtraLine] -> M.Map Text [ExtraLine]
+-- | This function either returns its argument unaltered, or
+-- it raises an error.
+type ValidateExtrasFunc = M.Map Text [ExtraLine] -> M.Map Text [ExtraLine]
+
 -- | The user can provide a function that validates the extra lines and either
 -- does not modify them if everything is OK, or it errors if they don't follow
 -- the custom (user defined) format.
 -- This error will appear at compile time, since we are dealing with Quasiquotation
 -- and Template Haskell. The first parameter may be useful to pass aditional
 -- quasiquotations, defined on other files.
-type ExtrasValidate a  = [a] -> ExtrasValidate'
+type ValidateExtras a  = [a] -> ValidateExtrasFunc
 
 data PersistSettings = PersistSettings
     { psToDBName :: !(Text -> Text)
@@ -89,7 +92,7 @@ data PersistSettings = PersistSettings
     -- ^ Whether fields are by default strict. Default value: @True@.
     --
     -- Since 1.2
-    , validateExtras :: !(Maybe ExtrasValidate')
+    , validateExtras :: !ValidateExtrasFunc
     -- ^ Extra settings function validation
     }
 
@@ -97,7 +100,7 @@ upperCaseSettings :: PersistSettings
 upperCaseSettings = PersistSettings
     { psToDBName = id
     , psStrictFields = True
-    , validateExtras = Nothing
+    , validateExtras = id
     }
 
 lowerCaseSettings :: PersistSettings
@@ -108,7 +111,7 @@ lowerCaseSettings = PersistSettings
                 | otherwise = T.singleton c
          in T.dropWhile (== '_') . T.concatMap go
     , psStrictFields = True
-    , validateExtras = Nothing
+    , validateExtras = id
     }
 
 -- | Parses a quasi-quoted syntax into a list of entity definitions.
@@ -220,8 +223,8 @@ mkEntityDef ps name entattribs lines =
         case T.uncons name of
             Just ('+', x) -> (True, x)
             _ -> (False, name)
-    extrasProcess = maybe id id (validateExtras ps)
-    (attribs, extras) = fmap extrasProcess $ splitExtras lines
+    valExtrasFunc = validateExtras ps
+    (attribs, extras) = fmap valExtrasFunc (splitExtras lines)
     idName [] = "id"
     idName (t:ts) =
         case T.stripPrefix "id=" t of

@@ -12,6 +12,9 @@ module Database.Persist.Sqlite
     , SqliteConf (..)
     , runSqlite
     , wrapConnection
+    , wrapConnection'
+    , GetExtrasSql
+    , ExtrasSql
     ) where
 
 import Database.Persist.Sql
@@ -34,6 +37,25 @@ import qualified Data.Conduit.List as CL
 import Control.Applicative
 import Data.Int (Int64)
 import Control.Monad ((>=>))
+
+type TableName  = Text
+type ExtrasEntry = (Text,[ExtraLine])
+
+-- | User function that given a user list, a table name and the
+-- extras defined for that table (in the persistent quasiquoting)
+-- generates migration valid sql
+type GetExtrasSql a = [a] -> TableName -> ExtrasEntry -> Text
+-- | The user function and data packed into a tupple and made optional,
+-- to avoid interference with existing code.
+type ExtrasSql a = (GetExtrasSql a,[a])
+
+-- | No Extras Processing
+getNoExtrasSql :: GetExtrasSql a
+getNoExtrasSql _ _ _ = T.empty
+
+noExtrasSql :: (GetExtrasSql a,[a])
+noExtrasSql = (getNoExtrasSql,[])
+
 
 createSqlitePool :: MonadIO m => Text -> Int -> m ConnectionPool
 createSqlitePool s = createSqlPool $ open' s
@@ -62,7 +84,7 @@ wrapConnection conn = do
         , connStmtMap = smap
         , connInsertSql = insertSql'
         , connClose = Sqlite.close conn
-        , connMigrateSql = migrate'
+        , connMigrateSql = migrate' noExtrasSql
         , connBegin = helper "BEGIN"
         , connCommit = helper "COMMIT"
         , connRollback = ignoreExceptions . helper "ROLLBACK"
@@ -76,6 +98,30 @@ wrapConnection conn = do
         _ <- stmtExecute stmt []
         stmtReset stmt
     ignoreExceptions = E.handle (\(_ :: E.SomeException) -> return ())
+
+wrapConnection' :: ExtrasSql e -> Sqlite.Connection -> IO Connection
+wrapConnection' gsql conn = do
+    smap <- newIORef $ Map.empty
+    return Connection
+        { connPrepare = prepare' conn
+        , connStmtMap = smap
+        , connInsertSql = insertSql'
+        , connClose = Sqlite.close conn
+        , connMigrateSql = migrate' gsql
+        , connBegin = helper "BEGIN"
+        , connCommit = helper "COMMIT"
+        , connRollback = ignoreExceptions . helper "ROLLBACK"
+        , connEscapeName = escape
+        , connNoLimit = "LIMIT -1"
+        , connRDBMS = "sqlite"
+        }
+  where
+    helper t getter = do
+        stmt <- getter t
+        _ <- stmtExecute stmt []
+        stmtReset stmt
+    ignoreExceptions = E.handle (\(_ :: E.SomeException) -> return ())
+
 
 -- | A convenience helper which creates a new database connection and runs the
 -- given block, handling @MonadResource@ and @MonadLogger@ requirements. Note
@@ -156,27 +202,36 @@ showSqlType SqlBlob = "BLOB"
 showSqlType SqlBool = "BOOLEAN"
 showSqlType (SqlOther t) = t
 
-migrate' :: [EntityDef a]
+getExtrasSql :: (GetExtrasSql a, [a]) -> EntityDef sqlType -> Text
+getExtrasSql (gsql,sql) val = let
+    tableName = unDBName . entityDB $ val
+    getSql = gsql sql tableName
+  in T.concat $ map (getSql) $ Map.toList (entityExtra val)
+
+
+migrate' :: ExtrasSql a
+         -> [EntityDef b]
          -> (Text -> IO Statement)
          -> EntityDef SqlType
          -> IO (Either [Text] [(Bool, Text)])
-migrate' allDefs getter val = do
+migrate' esql allDefs getter val = do
     let (cols, uniqs) = mkColumns allDefs val
     let newSql = mkCreateTable False def (filter (not . safeToRemove val . cName) cols, uniqs)
     stmt <- getter "SELECT sql FROM sqlite_master WHERE type='table' AND name=?"
     oldSql' <- runResourceT
              $ stmtQuery stmt [PersistText $ unDBName table] $$ go
     case oldSql' of
-        Nothing -> return $ Right [(False, newSql)]
+        Nothing -> return . Right . allSql $ [(False,newSql)]
         Just oldSql -> do
             if oldSql == newSql
                 then return $ Right []
                 else do
                     sql <- getCopyTable allDefs getter val
-                    return $ Right sql
+                    return . Right . allSql $ sql
   where
     def = val
     table = entityDB def
+    allSql sql = filter (not . T.null. snd) $ sql ++ [(False,getExtrasSql esql val)]
     go = do
         x <- CL.head
         case x of

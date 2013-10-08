@@ -8,15 +8,13 @@
 -- | A postgresql backend for persistent.
 module Database.Persist.Postgresql
     ( withPostgresqlPool
-    , withPostgresqlPool'
     , withPostgresqlConn
-    , withPostgresqlConn'
     , createPostgresqlPool
-    , createPostgresqlPool'
     , module Database.Persist.Sql
     , ConnectionString
     , PostgresConf (..)
     , openSimpleConn
+    , openSimpleConn'
     , GetExtrasSql
     , ExtrasSql
     ) where
@@ -80,7 +78,14 @@ type ExtrasEntry = (Text,[ExtraLine])
 type GetExtrasSql a = [a] -> TableName -> ExtrasEntry -> Text
 -- | The user function and data packed into a tupple and made optional,
 -- to avoid interference with existing code.
-type ExtrasSql a = Maybe (GetExtrasSql a,[a])
+type ExtrasSql a = (GetExtrasSql a,[a])
+
+-- | No Extras Processing
+getNoExtrasSql :: GetExtrasSql a
+getNoExtrasSql _ _ _ = T.empty
+
+noExtrasSql :: (GetExtrasSql a,[a])
+noExtrasSql = (getNoExtrasSql,[])
 
 -- | Create a PostgreSQL connection pool and run the given
 -- action.  The pool is properly released after the action
@@ -97,7 +102,7 @@ withPostgresqlPool :: MonadIO m
                    -- ^ Action to be executed that uses the
                    -- connection pool.
                    -> m a
-withPostgresqlPool ci = withSqlPool $ open' Nothing ci
+withPostgresqlPool ci = withSqlPool $ open' ci
 
 
 -- | Create a PostgreSQL connection pool.  Note that it's your
@@ -111,29 +116,29 @@ createPostgresqlPool :: MonadIO m
                      -- ^ Number of connections to be kept open
                      -- in the pool.
                      -> m ConnectionPool
-createPostgresqlPool ci = createSqlPool $ open' Nothing ci
+createPostgresqlPool ci = createSqlPool $ open' ci
 
 
 -- | Same as 'withPostgresqlPool', but instead of opening a pool
 -- of connections, only one connection is opened.
 withPostgresqlConn :: (MonadIO m, MonadBaseControl IO m)
                    => ConnectionString -> (Connection -> m a) -> m a
-withPostgresqlConn = withSqlConn . open' Nothing
+withPostgresqlConn = withSqlConn . open'
 
-open' :: ExtrasSql e -> ConnectionString -> IO Connection
-open' gsql cstr = do
-    PG.connectPostgreSQL cstr >>= openSimpleConn' gsql
+open' :: ConnectionString -> IO Connection
+open' cstr = do
+    PG.connectPostgreSQL cstr >>= openSimpleConn
 
 -- | Generate a 'Connection' from a 'PG.Connection'
-openSimpleConn :: ExtrasSql e -> PG.Connection -> IO Connection
-openSimpleConn gsql conn = do
+openSimpleConn :: PG.Connection -> IO Connection
+openSimpleConn conn = do
     smap <- newIORef $ Map.empty
     return Connection
         { connPrepare    = prepare' conn
         , connStmtMap    = smap
         , connInsertSql  = insertSql'
         , connClose      = PG.close conn
-        , connMigrateSql = migrate' gsql
+        , connMigrateSql = migrate' noExtrasSql
         , connBegin      = const $ PG.begin    conn
         , connCommit     = const $ PG.commit   conn
         , connRollback   = const $ PG.rollback conn
@@ -315,8 +320,9 @@ unBinary (PG.Binary x) = x
 
 getExtrasSql :: (GetExtrasSql a, [a]) -> EntityDef sqlType -> [AlterDB]
 getExtrasSql (gsql,sql) val = let
-    process = gsql sql (unDBName . entityDB $ val)
-  in map (AddSQL . process) $ Map.toList (entityExtra val)
+    tableName = unDBName . entityDB $ val
+    getSql = gsql sql tableName
+  in map (AddSQL . getSql) $ Map.toList (entityExtra val)
 
 migrate' :: ExtrasSql a
          -> [EntityDef b]
@@ -325,7 +331,6 @@ migrate' :: ExtrasSql a
          -> IO (Either [Text] [(Bool, Text)])
 migrate' esql allDefs getter val = fmap (fmap $ map showAlterDb) $ do
     let name = entityDB val
-        getExtras = maybe (const []) getExtrasSql esql
     old <- getColumns getter val
     case partitionEithers old of
         ([], old'') -> do
@@ -349,12 +354,12 @@ migrate' esql allDefs getter val = fmap (fmap $ map showAlterDb) $ do
                             [AlterTable name $ AddUniqueConstraint uname ucols]
                         references = mapMaybe (getAddReference name) $ fst new
                     return $ Right $ addTable : uniques ++ references
-                                                        ++ (getExtras val)
+                                                        ++ (getExtrasSql esql val)
                 else do
                     let (acs, ats) = getAlters val new old'
                     let acs' = map (AlterColumn name) acs
                     let ats' = map (AlterTable name) ats
-                    return $ Right $ acs' ++ ats' ++ (getExtras val)
+                    return $ Right $ acs' ++ ats' ++ (getExtrasSql esql val)
         (errs, _) -> return $ Left errs
 
 type SafeToRemove = Bool
@@ -759,55 +764,6 @@ refName (DBName table) (DBName column) =
 
 udToPair :: UniqueDef -> (DBName, [DBName])
 udToPair ud = (uniqueDBName ud, map snd $ uniqueFields ud)
-
--------------------------------------------------------------------------------
--- Extra Stuff ----------------------------------------------------------------
--------------------------------------------------------------------------------
-
--- | Similar to @withPostgresqlConn , but with additional user defined
--- migration code generation tool, to add custom SQL code to the migration
--- process.
-withPostgresqlPool' :: MonadIO m
-                   => ExtrasSql e
-                   -- ^ Function to get custom SQL to be executed
-                   -- at migration
-                   -> ConnectionString
-                   -- ^ Connection string to the database.
-                   -> Int
-                   -- ^ Number of connections to be kept open in
-                   -- the pool.
-                   -> (ConnectionPool -> m a)
-                   -- ^ Action to be executed that uses the
-                   -- connection pool.
-                   -> m a
-withPostgresqlPool' gsql ci = withSqlPool $ open' gsql ci
-
-
--- | Similar to @createPostgresqlPool , but with additional user defined
--- migration code generation tool, to add custom SQL code to the migration
--- process.
-createPostgresqlPool':: MonadIO m
-                     => ExtrasSql e
-                     -- ^ Function to get custom SQL to be executed
-                     -- at migration
-                     -> ConnectionString
-                     -- ^ Connection string to the database.
-                     -> Int
-                     -- ^ Number of connections to be kept open
-                     -- in the pool.
-                     -> m ConnectionPool
-createPostgresqlPool' gsql ci = createSqlPool $ open' gsql ci
-
-
--- | Similar to @withPostgresqlConn , but with additional user defined
--- migration code generation tool, to add custom SQL code to the migration
--- process.
-withPostgresqlConn' :: (MonadIO m, MonadBaseControl IO m)
-                   => ExtrasSql e
-                   -> ConnectionString
-                   -> (Connection -> m a)
-                   -> m a
-withPostgresqlConn' gsql = withSqlConn . (open' gsql)
 
 
 -- | Similar to @openSimpleConn , but with additional user defined
