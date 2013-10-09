@@ -13,8 +13,6 @@ module Database.Persist.Sqlite
     , runSqlite
     , wrapConnection
     , wrapConnection'
-    , GetExtrasSql
-    , ExtrasSql
     ) where
 
 import Database.Persist.Sql
@@ -37,24 +35,6 @@ import qualified Data.Conduit.List as CL
 import Control.Applicative
 import Data.Int (Int64)
 import Control.Monad ((>=>))
-
-type TableName  = Text
-type ExtrasEntry = (Text,[ExtraLine])
-
--- | User function that given a user list, a table name and the
--- extras defined for that table (in the persistent quasiquoting)
--- generates migration valid sql
-type GetExtrasSql a = [a] -> TableName -> ExtrasEntry -> Text
--- | The user function and data packed into a tupple and made optional,
--- to avoid interference with existing code.
-type ExtrasSql a = (GetExtrasSql a,[a])
-
--- | No Extras Processing
-getNoExtrasSql :: GetExtrasSql a
-getNoExtrasSql _ _ _ = T.empty
-
-noExtrasSql :: (GetExtrasSql a,[a])
-noExtrasSql = (getNoExtrasSql,[])
 
 
 createSqlitePool :: MonadIO m => Text -> Int -> m ConnectionPool
@@ -84,7 +64,7 @@ wrapConnection conn = do
         , connStmtMap = smap
         , connInsertSql = insertSql'
         , connClose = Sqlite.close conn
-        , connMigrateSql = migrate' noExtrasSql
+        , connMigrateSql = migrate' noCustomSql
         , connBegin = helper "BEGIN"
         , connCommit = helper "COMMIT"
         , connRollback = ignoreExceptions . helper "ROLLBACK"
@@ -99,7 +79,7 @@ wrapConnection conn = do
         stmtReset stmt
     ignoreExceptions = E.handle (\(_ :: E.SomeException) -> return ())
 
-wrapConnection' :: ExtrasSql e -> Sqlite.Connection -> IO Connection
+wrapConnection' :: CustomSql e -> Sqlite.Connection -> IO Connection
 wrapConnection' gsql conn = do
     smap <- newIORef $ Map.empty
     return Connection
@@ -203,19 +183,22 @@ showSqlType SqlBlob = "BLOB"
 showSqlType SqlBool = "BOOLEAN"
 showSqlType (SqlOther t) = t
 
-getExtrasSql :: (GetExtrasSql a, [a]) -> EntityDef sqlType -> Text
-getExtrasSql (gsql,sql) val = let
+-- | Get the custom sql for the given entity
+getCustomSql :: (GetCustomSql a, [a]) -> EntityDef sqlType -> [Text]
+getCustomSql (gsql,sql) val = let
     tableName = unDBName . entityDB $ val
     getSql = gsql sql tableName
-  in T.concat $ map (getSql) $ Map.toList (entityExtra val)
+  in   concat
+     $ map getSql
+     $ Map.toList (entityExtra val)
 
 
-migrate' :: ExtrasSql a
+migrate' :: CustomSql a
          -> [EntityDef b]
          -> (Text -> IO Statement)
          -> EntityDef SqlType
          -> IO (Either [Text] [(Bool, Text)])
-migrate' esql allDefs getter val = do
+migrate' csql allDefs getter val = do
     let (cols, uniqs) = mkColumns allDefs val
     let newSql = mkCreateTable False def (filter (not . safeToRemove val . cName) cols, uniqs)
     stmt <- getter "SELECT sql FROM sqlite_master WHERE type='table' AND name=?"
@@ -232,7 +215,8 @@ migrate' esql allDefs getter val = do
   where
     def = val
     table = entityDB def
-    allSql sql = filter (not . T.null. snd) $ sql ++ [(False,getExtrasSql esql val)]
+    allSql sql = filter (not . T.null. snd) $ sql
+                                      ++ [(False,T.concat $ getCustomSql csql val)]
     go = do
         x <- CL.head
         case x of
@@ -377,3 +361,12 @@ finally a sequel = control $ \runInIO ->
                      E.finally (runInIO a)
                                (runInIO sequel)
 {-# INLINABLE finally #-}
+
+-- | No Extras Processing
+getNoCustomSql :: GetCustomSql a
+getNoCustomSql _ _ _ = []
+
+noCustomSql :: (GetCustomSql a,[a])
+noCustomSql = (getNoCustomSql,[])
+
+

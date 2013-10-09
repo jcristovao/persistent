@@ -9,6 +9,8 @@ module Database.Persist.Sql.Migration
   , runMigrationSilent
   , runMigrationUnsafe
   , migrate
+  , CustomSql
+  , GetCustomSql
   ) where
 
 
@@ -117,3 +119,17 @@ migrate allDefs val = do
     conn <- askSqlConn
     res <- liftIO $ connMigrateSql conn allDefs (getStmtConn conn) val
     either tell (lift . tell) res
+
+
+type TableName  = Text
+type CustomSqlEntry = (Text,[ExtraLine])
+
+-- | User function that given a user list, a table name and the
+-- extras defined for that table (in the persistent quasiquoting)
+-- generates custom migration valid sql
+type GetCustomSql a = [a] -> TableName -> CustomSqlEntry -> [Text]
+-- | The user function and data packed into a tupple so that
+-- disturbances to existing code 'seem' minor.
+type CustomSql a = (GetCustomSql a,[a])
+
+

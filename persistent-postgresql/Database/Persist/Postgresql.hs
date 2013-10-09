@@ -15,8 +15,6 @@ module Database.Persist.Postgresql
     , PostgresConf (..)
     , openSimpleConn
     , openSimpleConn'
-    , GetExtrasSql
-    , ExtrasSql
     ) where
 
 import Database.Persist.Sql
@@ -69,24 +67,6 @@ import Data.Int (Int64)
 -- for more details on how to create such strings.
 type ConnectionString = ByteString
 
-type TableName  = Text
-type ExtrasEntry = (Text,[ExtraLine])
-
--- | User function that given a user list, a table name and the
--- extras defined for that table (in the persistent quasiquoting)
--- generates migration valid sql
-type GetExtrasSql a = [a] -> TableName -> ExtrasEntry -> Text
--- | The user function and data packed into a tupple and made optional,
--- to avoid interference with existing code.
-type ExtrasSql a = (GetExtrasSql a,[a])
-
--- | No Extras Processing
-getNoExtrasSql :: GetExtrasSql a
-getNoExtrasSql _ _ _ = T.empty
-
-noExtrasSql :: (GetExtrasSql a,[a])
-noExtrasSql = (getNoExtrasSql,[])
-
 -- | Create a PostgreSQL connection pool and run the given
 -- action.  The pool is properly released after the action
 -- finishes using it.  Note that you should not use the given
@@ -138,7 +118,7 @@ openSimpleConn conn = do
         , connStmtMap    = smap
         , connInsertSql  = insertSql'
         , connClose      = PG.close conn
-        , connMigrateSql = migrate' noExtrasSql
+        , connMigrateSql = migrate' noCustomSql
         , connBegin      = const $ PG.begin    conn
         , connCommit     = const $ PG.commit   conn
         , connRollback   = const $ PG.rollback conn
@@ -318,14 +298,17 @@ getGetter other   = error $ "Postgresql.getGetter: type " ++
 unBinary :: PG.Binary a -> a
 unBinary (PG.Binary x) = x
 
-getExtrasSql :: (GetExtrasSql a, [a]) -> EntityDef sqlType -> [AlterDB]
-getExtrasSql (gsql,sql) val = let
+-- | Get the custom sql for the given entity
+getCustomSql :: (GetCustomSql a, [a]) -> EntityDef sqlType -> [AlterDB]
+getCustomSql (gsql,sql) val = let
     tableName = unDBName . entityDB $ val
     getSql = gsql sql tableName
-  in map (AddSQL . getSql) $ Map.toList (entityExtra val)
+  in  map AddSql
+    $ concat
+    $ map getSql
+    $ Map.toList (entityExtra val)
 
-
-migrate' :: ExtrasSql a
+migrate' :: CustomSql a
          -> [EntityDef b]
          -> (Text -> IO Statement)
          -> EntityDef SqlType
@@ -333,7 +316,7 @@ migrate' :: ExtrasSql a
                              -- We nub because there might be duplicate statements generated
                              -- such as AlterColumn DropReference and AlterTable DropConstraint
                              -- for the same reference constraint.
-migrate' esql allDefs getter val = fmap (fmap $ nub . map showAlterDb) $ do
+migrate' csql allDefs getter val = fmap (fmap $ nub . map showAlterDb) $ do
     let name = entityDB val
     old <- getColumns getter val
     case partitionEithers old of
@@ -358,12 +341,12 @@ migrate' esql allDefs getter val = fmap (fmap $ nub . map showAlterDb) $ do
                             [AlterTable name $ AddUniqueConstraint uname ucols]
                         references = mapMaybe (getAddReference name) $ fst new
                     return $ Right $ addTable : uniques ++ references
-                                                        ++ (getExtrasSql esql val)
+                                                        ++ (getCustomSql csql val)
                 else do
                     let (acs, ats) = getAlters val new old'
                     let acs' = map (AlterColumn name) acs
                     let ats' = map (AlterTable name) ats
-                    return $ Right $ acs' ++ ats' ++ (getExtrasSql esql val)
+                    return $ Right $ acs' ++ ats' ++ (getCustomSql csql val)
         (errs, _) -> return $ Left errs
 
 type SafeToRemove = Bool
@@ -379,7 +362,7 @@ data AlterTable = AddUniqueConstraint DBName [DBName]
 data AlterDB = AddTable String
              | AlterColumn DBName AlterColumn'
              | AlterTable DBName AlterTable
-             | AddSQL Text
+             | AddSql Text
 
 -- | Returns all of the columns in the given table currently in the database.
 getColumns :: (Text -> IO Statement)
@@ -585,7 +568,7 @@ showSqlType (SqlOther t) = T.unpack t
 
 showAlterDb :: AlterDB -> (Bool, Text)
 showAlterDb (AddTable s) = (False, pack s)
-showAlterDb (AddSQL s) = (False, s)
+showAlterDb (AddSql s) = (False, s)
 showAlterDb (AlterColumn t (c, ac)) =
     (isUnsafe ac, pack $ showAlter t (c, ac))
   where
@@ -773,15 +756,15 @@ udToPair ud = (uniqueDBName ud, map snd $ uniqueFields ud)
 -- | Similar to @openSimpleConn , but with additional user defined
 -- migration code generation tool, to add custom SQL code to the migration
 -- process.
-openSimpleConn' :: ExtrasSql e -> PG.Connection -> IO Connection
-openSimpleConn' gsql conn = do
+openSimpleConn' :: CustomSql c -> PG.Connection -> IO Connection
+openSimpleConn' csql conn = do
     smap <- newIORef $ Map.empty
     return Connection
         { connPrepare    = prepare' conn
         , connStmtMap    = smap
         , connInsertSql  = insertSql'
         , connClose      = PG.close conn
-        , connMigrateSql = migrate' gsql
+        , connMigrateSql = migrate' csql
         , connBegin      = const $ PG.begin    conn
         , connCommit     = const $ PG.commit   conn
         , connRollback   = const $ PG.rollback conn
@@ -789,3 +772,12 @@ openSimpleConn' gsql conn = do
         , connNoLimit    = "LIMIT ALL"
         , connRDBMS      = "postgresql"
         }
+
+-- | No Extras Processing
+getNoCustomSql :: GetCustomSql a
+getNoCustomSql _ _ _ = []
+
+noCustomSql :: (GetCustomSql a,[a])
+noCustomSql = (getNoCustomSql,[])
+
+

@@ -6,6 +6,7 @@ module Database.Persist.MySQL
     ( withMySQLPool
     , withMySQLConn
     , createMySQLPool
+    , openSimpleConn'
     , module Database.Persist.Sql
     , MySQL.ConnectInfo(..)
     , MySQLBase.SSLInfo(..)
@@ -47,8 +48,6 @@ import qualified Database.MySQL.Simple.Types  as MySQL
 
 import qualified Database.MySQL.Base          as MySQLBase
 import qualified Database.MySQL.Base.Types    as MySQLBase
-
-
 
 -- | Create a MySQL connection pool and run the given action.
 -- The pool is properly released after the action finishes using
@@ -100,7 +99,7 @@ open' ci = do
         , connStmtMap    = smap
         , connInsertSql  = insertSql'
         , connClose      = MySQL.close conn
-        , connMigrateSql = migrate' ci
+        , connMigrateSql = migrate' noCustomSql ci
         , connBegin      = const $ MySQL.execute_ conn "start transaction" >> return ()
         , connCommit     = const $ MySQL.commit   conn
         , connRollback   = const $ MySQL.rollback conn
@@ -111,7 +110,33 @@ open' ci = do
         , connRDBMS      = "mysql"
         , connLimitOffset = decorateSQLWithLimitOffset "LIMIT 18446744073709551615"
         }
-        
+
+-- | Similar to @open', but with additional user defined
+-- migration code generation tool, to add custom SQL code to the migration
+-- process.
+openSimpleConn' :: CustomSql c -> MySQL.ConnectInfo -> IO Connection
+openSimpleConn' csql ci = do
+    conn <- MySQL.connect ci
+    MySQLBase.autocommit conn False -- disable autocommit!
+    smap <- newIORef $ Map.empty
+    return Connection
+        { connPrepare    = prepare' conn
+        , connStmtMap    = smap
+        , connInsertSql  = insertSql'
+        , connClose      = MySQL.close conn
+        , connMigrateSql = migrate' csql ci
+        , connBegin      = const $ MySQL.execute_ conn "start transaction" >> return ()
+        , connCommit     = const $ MySQL.commit   conn
+        , connRollback   = const $ MySQL.rollback conn
+        , connEscapeName = pack . escapeDBName
+        , connNoLimit    = "LIMIT 18446744073709551615"
+        -- This noLimit is suggested by MySQL's own docs, see
+        -- <http://dev.mysql.com/doc/refman/5.5/en/select.html>
+        , connRDBMS      = "mysql"
+        , connLimitOffset = decorateSQLWithLimitOffset "LIMIT 18446744073709551615"
+        }
+
+
 -- | Prepare a query.  We don't support prepared statements, but
 -- we'll do some client-side preprocessing here.
 prepare' :: MySQL.Connection -> Text -> IO Statement
@@ -262,16 +287,27 @@ getGetter other = error $ "MySQL.getGetter: type " ++
 
 ----------------------------------------------------------------------
 
+-- | Get the custom sql for the given entity
+getCustomSql :: (GetCustomSql a, [a]) -> EntityDef sqlType -> [AlterDB]
+getCustomSql (gsql,sql) val = let
+    tableName = unDBName . entityDB $ val
+    getSql = gsql sql tableName
+  in   map AddSql
+     $ concat
+     $ map getSql
+     $ Map.toList (entityExtra val)
+
 
 -- | Create the migration plan for the given 'PersistEntity'
 -- @val@.
-migrate' :: Show a
-         => MySQL.ConnectInfo
-         -> [EntityDef a]
+migrate' :: Show b
+         => CustomSql a
+         -> MySQL.ConnectInfo
+         -> [EntityDef b]
          -> (Text -> IO Statement)
          -> EntityDef SqlType
          -> IO (Either [Text] [(Bool, Text)])
-migrate' connectInfo allDefs getter val = do
+migrate' csql connectInfo allDefs getter val = do
     let name = entityDB val
     (idClmn, old) <- getColumns connectInfo getter val
     let new = second (map udToPair) $ mkColumns allDefs val
@@ -294,13 +330,17 @@ migrate' connectInfo allDefs getter val = do
         let foreigns = do
               Column cname _ _ _ _ _ (Just (refTblName, _)) <- fst new
               return $ AlterColumn name (cname, addReference allDefs refTblName)
-        return $ Right $ map showAlterDb $ addTable : uniques ++ foreigns
+        return $ Right $ map showAlterDb $ addTable :  uniques
+                                                    ++ foreigns
+                                                    ++ (getCustomSql csql val)
       -- No errors and something found, migrate
       (_, _, ([], old')) -> do
         let (acs, ats) = getAlters allDefs name new $ partitionEithers old'
             acs' = map (AlterColumn name) acs
             ats' = map (AlterTable  name) ats
-        return $ Right $ map showAlterDb $ acs' ++ ats'
+        return $ Right $ map showAlterDb $  acs'
+                                         ++ ats'
+                                         ++ (getCustomSql csql val)
       -- Errors
       (_, _, (errs, _)) -> return $ Left errs
 
@@ -344,6 +384,7 @@ data AlterTable = AddUniqueConstraint DBName [(DBName, FieldType)]
 data AlterDB = AddTable String
              | AlterColumn DBName AlterColumn'
              | AlterTable DBName AlterTable
+             | AddSql Text
 
 
 udToPair :: UniqueDef -> (DBName, [DBName])
@@ -643,6 +684,7 @@ showAlterDb (AlterColumn t (c, ac)) =
     isUnsafe Drop = True
     isUnsafe _    = False
 showAlterDb (AlterTable t at) = (False, pack $ showAlterTable t at)
+showAlterDb (AddSql s) = (False, s)
 
 
 -- | Render an action that must be done on a table.
@@ -671,14 +713,14 @@ showAlterTable table (DropUniqueConstraint cname) = concat
 
 -- | Render an action that must be done on a column.
 showAlter :: DBName -> AlterColumn' -> String
-showAlter table (oldName, Change (Column n nu t def _ maxLen _ref)) =
+showAlter table (oldName, Change (Column n nu t def cn maxLen _ref)) =
     concat
     [ "ALTER TABLE "
     , escapeDBName table
     , " CHANGE "
     , escapeDBName oldName
     , " "
-    , showColumn (Column n nu t def _ maxLen Nothing)
+    , showColumn (Column n nu t def cn maxLen Nothing)
     ]
 showAlter table (_, Add' col) =
     concat
@@ -816,3 +858,12 @@ instance PersistConfig MySQLConf where
                          , MySQL.connectDatabase = maybeEnv database "DATABASE"
                          }
           }
+
+-- | No Extras Processing
+getNoCustomSql :: GetCustomSql a
+getNoCustomSql _ _ _ = []
+
+noCustomSql :: (GetCustomSql a,[a])
+noCustomSql = (getNoCustomSql,[])
+
+
