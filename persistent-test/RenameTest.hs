@@ -22,21 +22,21 @@ import qualified Data.Map as Map
 import qualified Data.Text as T
 
 import Init
-import Triggers
-import PostgresqlHssqlppp
-import H
 
 -- Test lower case names
 #if WITH_MONGODB
 mkPersist persistSettings [persistLowerCase|
 #else
-share [mkPersist sqlSettings, mkMigrate "lowerCaseMigrate"] [persistLowerWithSql|
+share [mkPersist sqlSettings, mkMigrate "lowerCaseMigrate"] [persistLowerCase|
 #endif
 LowerCaseTable id=my_id
     fullName Text
-    Triggers
-        tableIdTrig AFTER INSERT OR UPDATE
-        tableTrig BEFORE DELETE UPDATE
+    ExtraBlock
+        foo bar
+        baz
+        bin
+    ExtraBlock2
+        something
 RefTable
     someVal Int sql=something_else
     lct LowerCaseTableId
@@ -47,18 +47,17 @@ specs :: Spec
 specs = describe "rename specs" $ do
 #ifndef WITH_MONGODB
     it "handles lower casing" $ asIO $ do
-        runConn' (Just (getSqlCode,triggers)) $ do
-            _ <- runMigration lowerCaseMigrate
+        runConn $ do
+            _ <- runMigrationSilent lowerCaseMigrate
             C.runResourceT $ rawQuery "SELECT full_name from lower_case_table WHERE my_id=5" [] C.$$ CL.sinkNull
             C.runResourceT $ rawQuery "SELECT something_else from ref_table WHERE id=4" [] C.$$ CL.sinkNull
 #endif
     it "extra blocks" $ do
         entityExtra (entityDef (Nothing :: Maybe LowerCaseTable)) @?=
             Map.fromList
-                [ ("Triggers", map T.words ["tableIdTrig AFTER INSERT OR UPDATE"])
+                [ ("ExtraBlock", map T.words ["foo bar", "baz", "bin"])
+                , ("ExtraBlock2", map T.words ["something"])
                 ]
 
 asIO :: IO a -> IO a
 asIO = id
-
-

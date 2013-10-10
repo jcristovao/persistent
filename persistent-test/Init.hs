@@ -12,7 +12,6 @@ module Init (
   , assertEmpty
   , BackendMonad
   , runConn
-  , runConn'
 
 #ifdef WITH_MONGODB
   , db'
@@ -48,7 +47,6 @@ import Test.QuickCheck
 
 import Database.Persist
 import Data.Text (Text)
-import qualified Data.Text.Lazy as LT
 
 #ifdef WITH_MONGODB
 import qualified Database.MongoDB as MongoDB
@@ -152,8 +150,7 @@ type BackendMonad = SqlBackend
 sqlite_database :: Text
 sqlite_database = "test/testdb.sqlite3"
 -- sqlite_database = ":memory:"
-runConn :: (MonadIO m, MonadBaseControl IO m)
-        => SqlPersistT (NoLoggingT m) t -> m ()
+runConn :: (MonadIO m, MonadBaseControl IO m) => SqlPersistT (NoLoggingT m) t -> m ()
 runConn f = runNoLoggingT $ do
     _<-withSqlitePool sqlite_database 1 $ runSqlPool f
 #  if WITH_POSTGRESQL
@@ -168,26 +165,6 @@ runConn f = runNoLoggingT $ do
                         } 1 $ runSqlPool f
 #  endif
     return ()
-
--- sqlite_database = ":memory:"
-runConn':: (MonadIO m, MonadBaseControl IO m)
-        => ExtrasSql LT.Text
-        -> SqlPersistT (NoLoggingT m) t -> m ()
-runConn' esql f = runNoLoggingT $ do
-    _<-withSqlitePool sqlite_database 1 $ runSqlPool f
-#  if WITH_POSTGRESQL
-    _<-withPostgresqlPool' esql "host=localhost port=5432 user=test dbname=test password=test" 1 $ runSqlPool f
-#  endif
-#  if WITH_MYSQL
-    _ <- withMySQLPool defaultConnectInfo
-                        { connectHost     = "localhost"
-                        , connectUser     = "test"
-                        , connectPassword = "test"
-                        , connectDatabase = "test"
-                        } 1 $ runSqlPool f
-#  endif
-    return ()
-
 
 db :: SqlPersistT (NoLoggingT (ResourceT IO)) () -> Assertion
 db actions = do
