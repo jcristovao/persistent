@@ -215,8 +215,8 @@ migrate' csql allDefs getter val = do
   where
     def = val
     table = entityDB def
-    allSql sql = filter (not . T.null. snd) $ sql
-                                      ++ [(False,T.concat $ getCustomSql csql val)]
+    allSql sql = filter (not . T.null. snd)
+               $ sql ++ (map (\s -> (False,s)) $ getCustomSql csql val)
     go = do
         x <- CL.head
         case x of
