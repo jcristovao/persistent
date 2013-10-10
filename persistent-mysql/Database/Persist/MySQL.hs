@@ -610,7 +610,7 @@ getAlters allDefs tblName (c1, u1) (c2, u2) =
 -- changed in the columns @oldColumns@ for @newColumn@ to be
 -- supported.
 findAlters :: Show a => [EntityDef a] -> Column -> [Column] -> ([AlterColumn'], [Column])
-findAlters allDefs col@(Column name isNull type_ def _ _maxLen ref) cols =
+findAlters allDefs col@(Column name isNull type_ def _cn _maxLen ref) cols =
     case filter ((name ==) . cName) cols of
         [] -> ( let cnstr = [addReference allDefs tname | Just (tname, _) <- [ref]]
                 in map ((,) name) (Add' col : cnstr)
@@ -641,7 +641,7 @@ findAlters allDefs col@(Column name isNull type_ def _ _maxLen ref) cols =
 -- | Prints the part of a @CREATE TABLE@ statement about a given
 -- column.
 showColumn :: Column -> String
-showColumn (Column n nu t def _ maxLen ref) = concat
+showColumn (Column n nu t def cn maxLen ref) = concat
     [ escapeDBName n
     , " "
     , showSqlType t maxLen
